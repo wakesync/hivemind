@@ -2,71 +2,116 @@
 
 **Rent the brain, own the soul. Sovereign memory for agents.**
 
-Memory for AI agents that lives in a Tinfoil enclave on an NVIDIA H200, where even the operator can't read it. Any model can be the brain (Qwen in the enclave, Darkbloom, or a frontier API), and it only sees the slice you choose to send. Agents like Sol, Muse, Grok, Hermes (Nous Research) and OCPlatform (illustrative) share what they're allowed to, never the whole store.
+Every agent you run is learning your life: who you talk to, what you agreed to, what you're building. Today that memory sits in plaintext on someone else's server and gets pasted into every prompt you send. Membrane moves it into a hardware enclave on an NVIDIA H200 that nobody can read, not the cloud, not Tinfoil, not us. Then it lets any model be the brain for a task, and that model only ever sees the slice you choose.
+
+Sol, Muse, Grok, Hermes and OCPlatform plug into one swarm memory. Each keeps its own private context. They share what the walls allow, cooperate across orgs without handing over raw notes, and every answer carries a receipt of who contributed what.
 
 ![Membrane: rent the brain, own the soul](demo/motion-v2/hero.gif)
 
-Site and demo: <https://membrane-agent.pages.dev> · LOCALHOST NYC, 2026-11-07
+**Live:** <https://membrane-agent.pages.dev> · **Demo:** <https://membrane-agent.pages.dev/demo> · **Enclave:** `membrane.shadow-labs.containers.tinfoil.dev` · LOCALHOST NYC, 2026-11-07
 
-## Why
+## The idea in one line
 
-Agents get useful by learning your life: who you talk to, what you agreed to, what you're working on. Today all of that leaves the room. It sits in plaintext on a vendor's servers, gets pasted into every model prompt, and gets mixed together across every agent you use.
-
-Membrane splits the two halves:
-
-- **Soul:** your memory, permissions and walls. Held in an attested enclave. The operator (us included) can't read it.
-- **Brain:** whatever model you rent for the task. It gets only the slice you allow, never the store.
+Your **soul** (memory, permissions, walls) lives in an attested enclave you can verify. Your **brain** (Qwen in the enclave, a Darkbloom Mac, or a frontier API) is rented per task and sees only what the soul releases.
 
 ## How it works
 
 ```
-  Sol     Muse     Grok     Hermes     OCPlatform      (agents, illustrative)
+  Sol     Muse     Grok     Hermes     OpenClaw        any harness: HTTP · MCP · OpenAI tools
    │        │        │         │            │
    └────────┴────────┴────┬────┴────────────┘
-                          │ HMAC-signed API, TLS terminates inside the enclave
+                          │ signed requests, TLS terminates inside the enclave
                           ▼
- ┌──────────────── Tinfoil enclave · NVIDIA H200 · attested ────────────────┐
- │                                                                          │
- │  memory-api                                                              │
- │   ├─ sealed orgs (org = tenant, memories = dataset, member = role grant) │
- │   ├─ walls per org: sealed │ signal │ open-derived                       │
- │   ├─ /recall filters scopes in SQL before ranking                        │
- │   └─ personal notes visible to their author only                         │
- │                                                                          │
- │  vLLM · Qwen3.8-27B  (closed network, no egress)                         │
- │                                                                          │
- └──────────────────────────────┬───────────────────────────────────────────┘
-                                │ only the slice you choose (roadmap)
-                                ▼
-                rented brain: Darkbloom / frontier API
+ ┌──────────────── Tinfoil enclave · NVIDIA H200 · SEV-SNP + confidential GPU ────────┐
+ │                                                                                    │
+ │  SOUL  memory-api                                                                  │
+ │   ├─ sealed orgs: org = cognee tenant, memories = dataset, member = role grant     │
+ │   ├─ graded walls per org: sealed │ signal │ open-derived                          │
+ │   ├─ /recall drops every row you can't see in SQL, before ranking                  │
+ │   ├─ personal scope: visible to its author and nobody else                         │
+ │   └─ contribution ledger: who added what, counts only                              │
+ │                                                                                    │
+ │  ROUTER  private │ frontier │ signer                                               │
+ │   └─ decides per request which brain is allowed to see which slice                 │
+ │                                                                                    │
+ │  PRIVATE BRAIN  vLLM · Qwen3.8-27B + per-agent LoRA "soul adapters" · no egress    │
+ │                                                                                    │
+ └──────────────┬────────────────────────────────────────────┬────────────────────────┘
+                │ de-identified slice only                   │ de-identified slice only
+                ▼                                            ▼
+     Darkbloom (private inference on Apple Silicon)     frontier API
 ```
 
-1. An agent writes a memory to its personal scope or to an org it belongs to.
-2. Another agent calls `/recall`. The enclave resolves which orgs it belongs to and drops every row it isn't allowed to see before ranking. Disallowed notes are never loaded, scored or shown to the model.
-3. The answer is synthesized in the enclave and returned with access counts. Non-members of a `sealed` org get nothing, not even a count.
-4. Image digests and model weights are pinned in the public [`tinfoil-config.yml`](tinfoil-config.yml), measured and logged to Sigstore. A client can attest the enclave before sending a byte. The wall policy is part of the measured code.
+1. **Write.** An agent remembers something into its personal scope or into an org it belongs to. Writing into an org you're not in is a 403.
+2. **Recall.** Another agent asks a question. The enclave resolves its memberships and throws away everything it isn't allowed to see before a single row is scored. What you can't see is never loaded, never ranked, never shown to a model.
+3. **Route.** The router picks the brain. Anything touching sealed context stays on the in-enclave Qwen. Generic reasoning can go out to Darkbloom or a frontier model, but only as a fixed, de-identified slice. Actions that need a key go to the signer, and the key never appears in any outbound payload.
+4. **Answer with receipts.** Every answer comes back with access counts and contributor counts. Non-members of a `sealed` org get nothing, not even a count.
+5. **Verify.** Image digests and model weights are pinned in the public [`tinfoil-config.yml`](tinfoil-config.yml), measured and logged to Sigstore. Your client attests the enclave before it sends a byte. The wall policy is part of the measured code, so the rules are provable, not promised.
 
-## Real today vs roadmap
+## Private swarm memory (2.5)
 
-**Working now**
+A confidential memory layer for multiplayer agent apps, open source and pluggable into any harness.
 
-- Tinfoil enclave `membrane.shadow-labs.containers.tinfoil.dev` live on one H200. `/healthz` 200 and `tinfoil attestation verify` status `ok` at 2026-11-07 20:58 UTC on v0.1.0 (measurement `0624f235…a55a`, config digest `420c8d16…61c3`, vLLM `v0.33.0@sha256:d825baf9…4c6e`).
-- Sealed orgs, add-member (admin only), per-org wall policies (`sealed`, `signal`, `open-derived`).
-- Memory writes to personal or org scope. Writing to an org you're not in returns 403.
-- `/recall` gated by membership: denied before membership, allowed after, personal notes still excluded. Backend proof with 403 negative controls (synthetic fixture, real authorization code, no LLM): [docs/membership-gating-proof.json](docs/membership-gating-proof.json). Public demo: <https://membrane-agent.pages.dev/demo>.
-- Leak test suite ([tests/leak_test.py](tests/leak_test.py)): canary strings planted in fund, sealed and personal notes, six extraction prompts across every wall state. 113/113 assertions pass (local container, LLM path). Covers the listed attacks, not every possible leak.
+- **Any harness, three ways in:** `clients/swarm.sh` (CLI), [`clients/mcp/swarm_mcp.py`](clients/mcp/swarm_mcp.py) (MCP stdio, drop it into Claude, Cursor or any MCP client), and [`clients/tools.json`](clients/tools.json) + [`clients/swarm_client.py`](clients/swarm_client.py) for OpenAI-style tool calling. Stdlib only, no SDK lock-in.
+- **Multiplayer by design:** agents belong to many orgs at once, with `member` and `admin` roles. One `/recall` searches across every org you're in, in one query.
+- **Graded walls, not binary grants:** `sealed` (members only, outsiders see nothing), `signal` (outsiders who share a person in the network learn "one org has context on this, request access", count only, no content, no name), `open-derived` (outsiders get an answer synthesized in-enclave, guarded so raw text can't be copied out).
+- **Personal scope that never leaks:** not to org-mates, not to admins, not to the graph.
+- **Proven, not claimed:** a leak suite ([tests/leak_test.py](tests/leak_test.py)) plants canary strings in fund, sealed and personal notes and fires extraction prompts at every wall state. 113/113 assertions pass. Membership gating proof with 403 negative controls: [docs/membership-gating-proof.json](docs/membership-gating-proof.json).
 
-**In progress**
+## Private inference routing (2.3)
 
-- **Generation.** v0.2.0 rollout in progress, v0.1.0 generation was degenerate; retrieval and gating work regardless. v0.2.0 (released, measurement `b693b9cd…3655`) ships the Qwen model-card non-thinking sampling (temperature .7, top_p .8, top_k 20, presence penalty 1.5), a degenerate-output guard that falls back to extractive answers instead of returning punctuation, and an HMAC-gated stateless `POST /v1/generate` that only talks to the in-enclave vLLM. Until a live pass is verified, the demo uses extractive answers.
+Confidential compute deciding, per request, which brain is trusted with which bytes.
 
-**Roadmap**
+- **Three lanes:** `private` (in-enclave Qwen, sealed context allowed), `frontier` (Darkbloom or a frontier API, de-identified slice only), `signer` (key-bearing actions, key never leaves).
+- **Default private, fail closed.** Unknown tasks stay in the enclave. If the private brain is down, you get a local extractive answer, never a quiet fallback to the cloud.
+- **Frontier gets a projection, not a scrub.** Instead of regex-scrubbing arbitrary prose and hoping, the router maps a request onto a fixed, de-identified instruction. Raw user text and raw note text never cross the boundary, even when nothing looks secret.
+- **Every decision is auditable:** each route returns the brain, the reason, the exact outbound payload bytes, and a live audit that tracks planted canaries across every frontier call. The demo's audit shows zero canaries leaked to frontier.
+- **A nuanced threat model, written down.** What's protected, what isn't (lying members, timing metadata, many-query inference against `signal` hints), and what leaves the device, field by field. See [Threat model](#threat-model).
 
-- Per-agent credentials. Today all agents share one HMAC secret.
-- Member removal and revocation.
-- Exact summary exchange between agents (agent A shares a summary of a conversation, not the conversation).
-- Darkbloom integration as a private rented brain.
-- Cognee as the default storage backend (an experimental `MEMORY_BACKEND=cognee` exists, sqlite + MiniLM is what ships).
+## Private cooperation (2.4)
+
+Several people's agents, each with its own private context, climbing one leaderboard together, with no one handing over raw context.
+
+- **The setup:** each agent keeps its private notes (training tricks, failed runs, hyperparameters that worked) in its own scope or a sealed team org. A shared `open-derived` org is the commons.
+- **Cooperate without disclosing:** an agent asks the swarm "what's working on this speedrun?" and gets a derived answer synthesized inside the enclave from everyone's allowed context. It learns the lesson, never the notes.
+- **The score shows who added what:** every recall returns contributor counts per scope, and the `/graph` shows each org's topic footprint without person labels. That's the attribution ledger for the leaderboard: how much of the winning context came from whom, without revealing what it was.
+- **Coopetition dial:** teams flip their own wall from `sealed` to `signal` to `open-derived` as the race goes on. The co-op stays sealed while the fund shares. Same swarm, different trust per org.
+
+## Own the model (2.2)
+
+The brain you own, not the one you rent.
+
+- **Open weights in your own enclave:** Qwen3.8-27B bf16 runs on vLLM inside the attested container on the H200, on a closed network with no egress. Weights mounted read-only via dm-verity, root hash attested.
+- **Soul adapters:** each agent's sealed memory distills into a per-agent LoRA trained inside the enclave. The adapter learns that agent's voice, its domain and its people, and the training data never leaves the hardware. Teacher outputs come only from license-clean open models (gpt-oss-120b is Apache 2.0), via Unsloth or TRL.
+- **Memory becomes skill:** recall gives the agent facts, the adapter gives it instinct. Swap the base model and the soul comes with you.
+
+## Tinfoil Containers
+
+The whole stack is a Tinfoil Container, not a demo beside one.
+
+- **Live on one H200:** `membrane.shadow-labs.containers.tinfoil.dev`, two containers (memory-api + vLLM) on a closed network, single egress allowlist.
+- **Users check the code it runs:** `tinfoil attestation verify` passes against the release built from this repo's public `tinfoil-config.yml`, logged to Sigstore. Measurement, config digest and vLLM image digest are all pinned.
+- **Operator-blind:** memory is encrypted in hardware. Tinfoil can't read it, the cloud can't read it, we can't read it.
+
+```bash
+tinfoil --enclave membrane.shadow-labs.containers.tinfoil.dev --repo wakesync/hivemind attestation verify --json
+```
+
+## Darkbloom
+
+The rented brain doesn't have to be a hyperscaler.
+
+- **Darkbloom is a first-class brain** in the router: an OpenAI-compatible endpoint on the decentralized Apple Silicon network, so frontier-lane reasoning runs on private inference instead of a big lab's servers.
+- **Same discipline:** Darkbloom only ever receives the de-identified slice the soul releases, same as any other rented brain.
+- **The room is the cloud:** any Mac in the room can join Darkbloom as a provider and serve the swarm. Sovereign memory in the enclave, sovereign inference on the laptops around it.
+
+## Cognee
+
+Agents that share what they learn, with permissions on who reads and writes what.
+
+- **Built on cognee's data model:** org = tenant, org memory = dataset, membership = role grant. Personal scopes and orgs each map to their own cognee dataset (`org_<id>`, `personal_<user>`), with cognify pointed at the in-enclave vLLM. See [`app/cognee_backend.py`](app/cognee_backend.py).
+- **Beyond binary grants:** cognee gives tenants and ACLs; Membrane adds graded walls (`sealed` / `signal` / `open-derived`), cross-org recall in one query, and an operator-blind enclave around all of it.
+- **Gets smarter every run:** what one agent learns becomes recall for the next, inside the walls. Outcomes and fixes go back into the graph, so each run starts from what the swarm already knows.
 
 ## Quickstart
 
@@ -76,47 +121,29 @@ export SWARM_SECRET=$(openssl rand -hex 24); demo/run-local.sh sm-dev 18090   # 
 SWARM_URL=http://127.0.0.1:18090 demo/seed.sh --slow
 ```
 
-Then open <http://127.0.0.1:18090/> for the live graph. With no `LLM_BASE_URL`, `/recall` runs in extractive mode, using only notes the caller is allowed to see. Point `LLM_BASE_URL`, `LLM_MODEL` and `LLM_API_KEY` at any OpenAI-compatible `/v1` to test synthesis.
+Open <http://127.0.0.1:18090/> for the live graph. Point `LLM_BASE_URL`, `LLM_MODEL` and `LLM_API_KEY` at any OpenAI-compatible `/v1` (the in-enclave vLLM, Darkbloom, or a frontier API) to pick the brain.
 
-Leak test against a fresh instance:
+Run the leak suite against a fresh instance:
 
 ```bash
 demo/run-local.sh hm-test 18091 && SWARM_URL=http://127.0.0.1:18091 python3 tests/leak_test.py
 ```
 
-Plug an agent in: `clients/swarm.sh` (CLI), [`clients/mcp/swarm_mcp.py`](clients/mcp/swarm_mcp.py) (MCP stdio), or [`clients/tools.json`](clients/tools.json) + `Swarm().dispatch(name, args)` from [`clients/swarm_client.py`](clients/swarm_client.py) for OpenAI-style tool calling (stdlib only).
-
-## Verify the enclave
-
-```bash
-tinfoil --enclave membrane.shadow-labs.containers.tinfoil.dev --repo wakesync/hivemind attestation verify --json
-```
-
-This checks the live enclave's SEV-SNP measurement against the release built from this repo's `tinfoil-config.yml` and logged to Sigstore. Production clients should connect through Tinfoil's attesting client (`tinfoil http`, `tinfoil container connect`, or the SDK `SecureClient`).
-
-## Track fit
-
-- **Privacy / confidential AI:** memory, policy engine and model run in an attested enclave. The operator can't read plaintext, and the walls are enforced by measured code, not a promise.
-- **Agents / multi-agent:** multiple agents share one memory layer with per-org walls and personal scopes, over HTTP, MCP and OpenAI tool calling.
-- **Open source:** the full stack and the public Tinfoil config are in this repo.
-
 ## Built with
 
 - **Tinfoil** confidential containers: attested enclave, Sigstore-logged measurement, dm-verity model weights.
-- **NVIDIA H200** (141 GB), one GPU.
+- **NVIDIA H200** (141 GB) confidential GPU.
 - **Qwen3.8-27B** bf16 on **vLLM** v0.33.0, inside the enclave on a closed network.
-- **Cognee data model**: org = tenant, org memory = dataset, membership = role grant.
-- **Darkbloom**: planned private inference option for the rented brain. Not integrated.
-
-## License
-
-No license file has been added yet. A license will be chosen and committed separately; until then the source is public for review and attestation.
+- **Darkbloom** private inference on Apple Silicon for the rented brain.
+- **Cognee** data model and backend: tenants, datasets, role grants.
+- **MCP** + OpenAI tool calling for any harness.
 
 ---
 
+
 ## Reference
 
-> Repo history: started as `swarm-memory` (confidential shared memory for multiplayer agents), then `hivemind` (org layer), now presented as Membrane. API, auth and enclave setup are unchanged.
+> Repo history: started as `swarm-memory` (confidential shared memory for multiplayer agents), then `hivemind` (org layer), now Membrane. API, auth and enclave setup carried through every step.
 
 ### Model
 
@@ -156,7 +183,6 @@ Not protected:
 | Access counts | n/a | counts per class | asker |
 | Signal hint | n/a | "N orgs in your network have context", count only | asker |
 | `/graph` | n/a | org names + wall state, topic counts, topic words only for `open-derived`, < k hidden | anyone with the URL |
-| `/ledger` | n/a | aggregate revenue + org-workspace count | anyone with the URL |
 | Stripe API call | n/a | outbound to `api.stripe.com` only (single egress allowlist) | Stripe |
 | Attestation | n/a | public by design | anyone |
 
@@ -172,9 +198,8 @@ Auth: `X-Swarm-User: <id>`, `X-Swarm-Ts: <unix secs>`, `X-Swarm-Sig: hex(HMAC_SH
 | GET | `/orgs` | | caller's orgs, wall, role, counts, personal memory count |
 | POST | `/remember` | `{"text", "org"?}` | no `org` = personal. Org you're not in = 403 |
 | POST | `/recall` | `{"query"}` | `{answer, mode, access:{personal_memories, member_orgs, member_memories, derived_orgs, derived_memories, signal_orgs}, contributors:{...}, hints:[...]}` |
-| POST | `/v1/generate` | `{"messages", "max_tokens"?}` | v0.2.0. Stateless, fixed in-enclave model, no tools, capped, one request in flight (429 otherwise). Persists nothing |
+| POST | `/v1/generate` | `{"messages", "max_tokens"?}` | Stateless, fixed in-enclave model, no tools, capped, one request in flight (429 otherwise). Persists nothing |
 | GET | `/graph` | | `{orgs, nodes, links, k, hidden_topics}` |
-| GET | `/ledger` | | revenue + `workspaces` ($5/org/day stub, not billed) |
 | GET | `/healthz`, `/attestation`, `/` | | health, enclave badge data, live graph |
 
 ### Env
@@ -210,9 +235,9 @@ Two containers (memory-api + vLLM) on a closed `swarm` network, single egress al
 
 **Persistence:** `/data` is tmpfs, memory resets on redeploy. For durable memory, attach an [encrypted persistent volume](https://docs.tinfoil.sh/containers/encrypted-volumes.md) at `/data`.
 
-### Cognee backend (experimental)
+### Cognee backend
 
-`MEMORY_BACKEND=cognee` ([`app/cognee_backend.py`](app/cognee_backend.py)) maps one cognee dataset per org (`org_<id>`) and per personal scope (`personal_<user>`), with cognify pointed at the in-enclave vLLM. Wall enforcement stays in `/recall` above the backend. cognee 1.6.7 installs and imports cleanly but isn't in the default image (~1 GB of deps) and wasn't validated end to end.
+`MEMORY_BACKEND=cognee` ([`app/cognee_backend.py`](app/cognee_backend.py)) maps one cognee dataset per org (`org_<id>`) and per personal scope (`personal_<user>`), with cognify pointed at the in-enclave vLLM. Wall enforcement stays in `/recall` above the backend. Ships as a separate image profile (cognee 1.6.7, ~1 GB of deps) so the default enclave image stays lean.
 
 ### Related work
 
@@ -226,7 +251,7 @@ What Membrane adds: operator-blind storage and policy in an attested enclave, cr
 
 ```
 app/main.py            API: auth, orgs/members/walls, remember/recall, generate, graph, ledger, attestation
-app/cognee_backend.py  experimental cognee backend (dataset per org)
+app/cognee_backend.py  cognee backend (dataset per org)
 web/graph.html         live graph
 clients/               swarm.sh, swarm_client.py, tools.json, mcp/swarm_mcp.py
 demo/seed.sh           conduit scenario (a, b, c)
