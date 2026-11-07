@@ -28,7 +28,7 @@ networks:
 
 containers:
   - name: "memory-api"
-    image: "ghcr.io/wakesync/hivemind@sha256:58ce97a92e874214cc014028d396bd6dc2614b24d5aac806b7434a613bfdfc02"
+    image: "ghcr.io/wakesync/hivemind@sha256:__V020_DIGEST__"
     networks: [swarm, stripe]
     env:
       - LLM_BASE_URL: "http://vllm:8001/v1"
@@ -37,6 +37,18 @@ containers:
       - MEMORY_BACKEND: "sqlite"
       - GRAPH_K: "2"
       - DB_PATH: "/data/swarm.db"
+      # Qwen3.8-27B model card, non-thinking sampling (v0.1.0 forced temp .2 -> degenerate output)
+      - LLM_TEMPERATURE: "0.7"
+      - LLM_TOP_P: "0.8"
+      - LLM_TOP_K: "20"
+      - LLM_MIN_P: "0"
+      - LLM_PRESENCE_PENALTY: "1.5"
+      - LLM_REPETITION_PENALTY: "1.0"
+      # POST /v1/generate: HMAC-gated stateless proxy to the closed vllm, one in flight
+      - GENERATE_ENABLED: "1"
+      - GEN_MAX_MESSAGES: "16"
+      - GEN_MAX_PROMPT_CHARS: "16000"
+      - GEN_MAX_TOKENS: "1024"
     secrets:
       - SWARM_SECRET        # shared HMAC secret for agent auth
       - STRIPE_KEY          # restricted read-only key (rk_...), or "none" for stub ledger

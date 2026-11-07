@@ -38,7 +38,20 @@ EMBED_CACHE = os.environ.get("EMBED_CACHE", "/models")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://vllm:8001/v1").rstrip("/")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3.8-27b")
-LLM_TEMPERATURE = os.environ.get("LLM_TEMPERATURE", "0.2")
+# Sampling: Qwen3.8-27B model card, NON-thinking recommendation
+# (temperature .7, top_p .8, top_k 20, min_p 0, presence_penalty 1.5, repetition_penalty 1.0).
+# v0.1.0 forced temperature .2 with no penalties; /recall returned degenerate output.
+LLM_TEMPERATURE = os.environ.get("LLM_TEMPERATURE", "0.7")
+LLM_TOP_P = os.environ.get("LLM_TOP_P", "0.8")
+LLM_TOP_K = os.environ.get("LLM_TOP_K", "20")
+LLM_MIN_P = os.environ.get("LLM_MIN_P", "0")
+LLM_PRESENCE_PENALTY = os.environ.get("LLM_PRESENCE_PENALTY", "1.5")
+LLM_REPETITION_PENALTY = os.environ.get("LLM_REPETITION_PENALTY", "1.0")
+# Stateless in-enclave generation proxy (POST /v1/generate). HMAC-gated, bounded, one in flight.
+GENERATE_ENABLED = os.environ.get("GENERATE_ENABLED", "1") not in ("0", "false", "")
+GEN_MAX_MESSAGES = int(os.environ.get("GEN_MAX_MESSAGES", "16"))
+GEN_MAX_PROMPT_CHARS = int(os.environ.get("GEN_MAX_PROMPT_CHARS", "16000"))
+GEN_MAX_TOKENS = int(os.environ.get("GEN_MAX_TOKENS", "1024"))
 LLM_EXTRA_BODY = os.environ.get("LLM_EXTRA_BODY", "")  # JSON merged into chat body
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "60"))
 LLM_ENABLED = os.environ.get("LLM_ENABLED", "1") not in ("0", "false", "")
@@ -291,23 +304,63 @@ def llm_answer(query: str, hits: list[dict]) -> str | None:
         ],
         "max_tokens": 1200,
     }
-    if LLM_TEMPERATURE:
-        body["temperature"] = float(LLM_TEMPERATURE)
-    if "gpt-oss" in LLM_MODEL:
-        body["reasoning_effort"] = "low"
-    elif "qwen" in LLM_MODEL.lower():
-        body["chat_template_kwargs"] = {"enable_thinking": False}  # vLLM: skip <think>
-    if LLM_EXTRA_BODY:
-        body.update(json.loads(LLM_EXTRA_BODY))
+    body.update(sampling_params())
     try:
         r = httpx.post(f"{LLM_BASE_URL}/chat/completions", json=body, headers=headers, timeout=LLM_TIMEOUT)
         r.raise_for_status()
         msg = r.json()["choices"][0]["message"]
-        out = re.sub(r"<think>.*?</think>", "", msg.get("content") or "", flags=re.S).strip()
+        out = strip_think(msg.get("content") or "")
+        if out and quality(out)["degenerate"]:
+            # never hand punctuation soup to a caller as an "answer"; extractive fallback instead
+            print("[swarm-memory] llm output degenerate, falling back")
+            return None
         return scrub(out) if out else None
     except Exception as e:
         print(f"[swarm-memory] llm unavailable: {type(e).__name__}")
         return None
+
+
+LEGACY_SAMPLING = {"temperature": 0.2}  # v0.1.0 behaviour, kept only for A/B diagnosis
+
+
+def sampling_params(preset: str = "recommended") -> dict:
+    """Request-body sampling + chat-template fields for the in-enclave model."""
+    if preset == "legacy":
+        p = dict(LEGACY_SAMPLING)
+    else:
+        p = {}
+        for k, v, cast in (("temperature", LLM_TEMPERATURE, float), ("top_p", LLM_TOP_P, float),
+                           ("top_k", LLM_TOP_K, int), ("min_p", LLM_MIN_P, float),
+                           ("presence_penalty", LLM_PRESENCE_PENALTY, float),
+                           ("repetition_penalty", LLM_REPETITION_PENALTY, float)):
+            if v not in (None, ""):
+                p[k] = cast(v)
+    if "gpt-oss" in LLM_MODEL:
+        p["reasoning_effort"] = "low"
+    elif "qwen" in LLM_MODEL.lower():
+        p["chat_template_kwargs"] = {"enable_thinking": False}  # vLLM: skip <think>
+    if LLM_EXTRA_BODY:
+        p.update(json.loads(LLM_EXTRA_BODY))
+    return p
+
+
+def strip_think(text: str) -> str:
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+    if "</think>" in text:  # opening tag eaten by the template
+        text = text.split("</think>", 1)[1]
+    return text.strip()
+
+
+def quality(text: str) -> dict:
+    """Content-free quality counts (safe to log/return). No text retained."""
+    n = len(text)
+    letters = sum(1 for ch in text if ch.isalpha())
+    words = re.findall(r"[^\W\d_]{2,}", text)
+    ratio = letters / n if n else 0.0
+    top = Counter(text).most_common(1)[0][1] / n if n else 0.0
+    degenerate = n > 0 and (ratio < 0.3 or len(words) < 2 or (n >= 40 and top > 0.5))
+    return {"chars": n, "letters": letters, "words": len(words), "letter_ratio": round(ratio, 3),
+            "top_char_share": round(top, 3), "degenerate": degenerate}
 
 
 SENT = re.compile(r"(?<=[.!?])\s+")
@@ -400,6 +453,23 @@ def leaks_raw(answer: str, texts: list[str]) -> bool:
 
 def _inq(xs) -> str:
     return ",".join("?" * len(xs))
+
+
+# ---------------------------------------------------------------- stateless generation
+class GenMessage(BaseModel):
+    model_config = {"extra": "forbid"}
+    role: str = Field(..., pattern="^(system|user|assistant)$")
+    content: str = Field(..., min_length=1, max_length=16000)
+
+
+class GenerateIn(BaseModel):
+    model_config = {"extra": "forbid"}  # no model / url / base / tools fields accepted
+    messages: list[GenMessage] = Field(..., min_length=1, max_length=64)
+    max_tokens: int = Field(512, ge=1, le=4096)
+    sampling: str = Field("recommended", pattern="^(recommended|legacy)$")
+
+
+_gen_slot = threading.Semaphore(1)
 
 
 # ---------------------------------------------------------------- routes
@@ -539,6 +609,47 @@ def recall(body: RecallIn, scope: str = Depends(scope_from_headers)):
 
 
 PALETTE = ["#c8ff00", "#ff3b2f", "#2fd6ff", "#ffb000", "#c77dff", "#3bff9a"]
+
+
+@app.post("/v1/generate")
+def generate(body: GenerateIn, user: str = Depends(scope_from_headers)):
+    """Stateless in-enclave completion. Same closed vLLM destination as /recall, fixed model,
+    no caller-selected endpoint, nothing persisted or logged (content-free counts only).
+    Bounded prompt/output; one request in flight per enclave (busy -> 429)."""
+    if not GENERATE_ENABLED or not LLM_ENABLED or not LLM_BASE_URL:
+        raise HTTPException(503, "generation disabled")
+    if len(body.messages) > GEN_MAX_MESSAGES:
+        raise HTTPException(413, f"at most {GEN_MAX_MESSAGES} messages")
+    if sum(len(m.content) for m in body.messages) > GEN_MAX_PROMPT_CHARS:
+        raise HTTPException(413, f"prompt over {GEN_MAX_PROMPT_CHARS} chars")
+    if body.max_tokens > GEN_MAX_TOKENS:
+        raise HTTPException(413, f"max_tokens over {GEN_MAX_TOKENS}")
+    if not _gen_slot.acquire(blocking=False):
+        raise HTTPException(429, "generation busy, one request in flight")
+    try:
+        req = {"model": LLM_MODEL, "max_tokens": body.max_tokens,
+               "messages": [{"role": m.role, "content": m.content} for m in body.messages],
+               **sampling_params(body.sampling)}
+        headers = {"Authorization": f"Bearer {LLM_API_KEY}"} if LLM_API_KEY else {}
+        t0 = time.time()
+        try:
+            r = httpx.post(f"{LLM_BASE_URL}/chat/completions", json=req, headers=headers, timeout=LLM_TIMEOUT)
+            r.raise_for_status()
+            data = r.json()
+            choice = data["choices"][0]
+        except Exception as e:
+            print(f"[swarm-memory] generate upstream error: {type(e).__name__}")
+            raise HTTPException(502, "in-enclave model unavailable")
+        text = strip_think((choice.get("message") or {}).get("content") or "")
+        q = quality(text)
+        latency = round(time.time() - t0, 2)
+        print(f"[swarm-memory] generate chars={q['chars']} ratio={q['letter_ratio']} "
+              f"degenerate={q['degenerate']} finish={choice.get('finish_reason')} s={latency}")
+        return {"model": LLM_MODEL, "text": text, "finish_reason": choice.get("finish_reason"),
+                "usage": data.get("usage"), "sampling": body.sampling, "quality": q,
+                "latency_s": latency}
+    finally:
+        _gen_slot.release()
 
 
 @app.get("/graph")
