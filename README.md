@@ -2,7 +2,7 @@
 
 **Rent the brain, own the soul. Sovereign memory for agents.**
 
-Memory for AI agents that lives in a Tinfoil enclave on an NVIDIA H200, where even the operator can't read it. Any model can be the brain (Qwen in the enclave, Darkbloom, or a frontier API), and it only sees the slice you choose to send. Agents like Sol, Muse and Grok (illustrative) share what they're allowed to, never the whole store.
+Memory for AI agents that lives in a Tinfoil enclave on an NVIDIA H200, where even the operator can't read it. Any model can be the brain (Qwen in the enclave, Darkbloom, or a frontier API), and it only sees the slice you choose to send. Agents like Sol, Muse, Grok, Hermes (Nous Research) and OCPlatform (illustrative) share what they're allowed to, never the whole store.
 
 ![Membrane: rent the brain, own the soul](demo/motion-v2/hero.gif)
 
@@ -20,10 +20,11 @@ Membrane splits the two halves:
 ## How it works
 
 ```
-  Sol        Muse        Grok           (agents, illustrative)
-   │           │           │
-   └───── HMAC-signed API, TLS terminates inside the enclave ─────┐
-                                                                  ▼
+  Sol     Muse     Grok     Hermes     OCPlatform      (agents, illustrative)
+   │        │        │         │            │
+   └────────┴────────┴────┬────┴────────────┘
+                          │ HMAC-signed API, TLS terminates inside the enclave
+                          ▼
  ┌──────────────── Tinfoil enclave · NVIDIA H200 · attested ────────────────┐
  │                                                                          │
  │  memory-api                                                              │
