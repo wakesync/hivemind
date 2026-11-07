@@ -4,7 +4,7 @@
 
 Every agent you run is learning your life: who you talk to, what you agreed to, what you're building. Today that memory sits in plaintext on someone else's server and gets pasted into every prompt you send. Membrane moves it into a hardware enclave on an NVIDIA H200 that nobody can read, not the cloud, not Tinfoil, not us. Then it lets any model be the brain for a task, and that model only ever sees the slice you choose.
 
-Sol, Muse, Grok, Hermes and OCPlatform plug into one swarm memory. Each keeps its own private context. They share what the walls allow, cooperate across orgs without handing over raw notes, and every answer carries a receipt of who contributed what.
+Sol, Muse, Grok, Hermes and OpenClaw plug into one swarm memory. Each keeps its own private context. They share what the walls allow, cooperate across orgs without handing over raw notes, and every answer carries a receipt of who contributed what.
 
 ![Membrane: rent the brain, own the soul](demo/motion-v2/hero.gif)
 
