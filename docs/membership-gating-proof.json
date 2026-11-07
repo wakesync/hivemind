@@ -1,0 +1,248 @@
+[
+  {
+    "synthetic": true,
+    "execution": "real-local-backend",
+    "attested": false,
+    "retrieval": "deterministic fixture vectors; actual SQL authorization; no LLM",
+    "permission": "member",
+    "requester": "relay",
+    "result": {
+      "answer": "The Atlas project deadline is Friday at 17:00 UTC.",
+      "mode": "extractive",
+      "access": {
+        "personal_memories": 0,
+        "member_orgs": 1,
+        "member_memories": 1,
+        "derived_orgs": 0,
+        "derived_memories": 0,
+        "signal_orgs": 0
+      },
+      "contributors": {
+        "scopes": 1,
+        "other_scopes": 1,
+        "memories": 1,
+        "own_memories": 0
+      },
+      "hints": []
+    },
+    "trace": [
+      {
+        "method": "POST",
+        "path": "/orgs",
+        "actor": "mira",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/remember",
+        "actor": "mira",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/remember",
+        "actor": "mira",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/recall",
+        "actor": "mira",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/orgs/atlas-project/members",
+        "actor": "mira",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/orgs/atlas-project/members",
+        "actor": "relay",
+        "status": 403
+      },
+      {
+        "method": "POST",
+        "path": "/remember",
+        "actor": "relay",
+        "status": 403
+      },
+      {
+        "method": "POST",
+        "path": "/recall",
+        "actor": "relay",
+        "status": 200
+      }
+    ],
+    "checks": {
+      "owner_can_recall_private": true,
+      "private_excluded": true,
+      "self_grant_denied": true,
+      "scope_spoof_denied": true,
+      "unsigned_denied": true
+    }
+  },
+  {
+    "synthetic": true,
+    "execution": "real-local-backend",
+    "attested": false,
+    "retrieval": "deterministic fixture vectors; actual SQL authorization; no LLM",
+    "permission": "no membership",
+    "requester": "relay",
+    "result": {
+      "answer": "nothing in memory you can access matches that yet.",
+      "mode": "empty",
+      "access": {
+        "personal_memories": 0,
+        "member_orgs": 0,
+        "member_memories": 0,
+        "derived_orgs": 0,
+        "derived_memories": 0,
+        "signal_orgs": 0
+      },
+      "contributors": {
+        "scopes": 0,
+        "other_scopes": 0,
+        "memories": 0,
+        "own_memories": 0
+      },
+      "hints": []
+    },
+    "trace": [
+      {
+        "method": "POST",
+        "path": "/orgs",
+        "actor": "mira",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/remember",
+        "actor": "mira",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/remember",
+        "actor": "mira",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/recall",
+        "actor": "mira",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/orgs/atlas-project/members",
+        "actor": "relay",
+        "status": 403
+      },
+      {
+        "method": "POST",
+        "path": "/remember",
+        "actor": "relay",
+        "status": 403
+      },
+      {
+        "method": "POST",
+        "path": "/recall",
+        "actor": "relay",
+        "status": 200
+      }
+    ],
+    "checks": {
+      "owner_can_recall_private": true,
+      "private_excluded": true,
+      "self_grant_denied": true,
+      "scope_spoof_denied": true,
+      "unsigned_denied": true
+    }
+  },
+  {
+    "synthetic": true,
+    "execution": "real-local-backend",
+    "attested": false,
+    "retrieval": "deterministic fixture vectors; actual SQL authorization; no LLM",
+    "permission": "member",
+    "requester": "relay",
+    "result": {
+      "answer": "The Atlas project deadline is Friday at 17:00 UTC.",
+      "mode": "extractive",
+      "access": {
+        "personal_memories": 0,
+        "member_orgs": 1,
+        "member_memories": 1,
+        "derived_orgs": 0,
+        "derived_memories": 0,
+        "signal_orgs": 0
+      },
+      "contributors": {
+        "scopes": 1,
+        "other_scopes": 1,
+        "memories": 1,
+        "own_memories": 0
+      },
+      "hints": []
+    },
+    "trace": [
+      {
+        "method": "POST",
+        "path": "/orgs",
+        "actor": "mira",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/remember",
+        "actor": "mira",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/remember",
+        "actor": "mira",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/recall",
+        "actor": "mira",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/orgs/atlas-project/members",
+        "actor": "mira",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/orgs/atlas-project/members",
+        "actor": "relay",
+        "status": 403
+      },
+      {
+        "method": "POST",
+        "path": "/remember",
+        "actor": "relay",
+        "status": 403
+      },
+      {
+        "method": "POST",
+        "path": "/recall",
+        "actor": "relay",
+        "status": 200
+      }
+    ],
+    "checks": {
+      "owner_can_recall_private": true,
+      "private_excluded": true,
+      "self_grant_denied": true,
+      "scope_spoof_denied": true,
+      "unsigned_denied": true
+    }
+  }
+]
