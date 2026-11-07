@@ -8,7 +8,7 @@ Sol, Muse, Grok, Hermes and OCPlatform plug into one swarm memory. Each keeps it
 
 ![Membrane: rent the brain, own the soul](demo/motion-v2/hero.gif)
 
-**Live:** <https://membrane-agent.pages.dev> · **Demo:** <https://membrane-agent.pages.dev/demo> · **Enclave:** `membrane.shadow-labs.containers.tinfoil.dev` · LOCALHOST NYC, 2026-11-07
+**Live:** <https://membrane-agent.pages.dev> · **Demo:** <https://membrane-agent.pages.dev/demo> · **Enclave:** `membrane.shadow-labs.containers.tinfoil.dev` · **Call it:** [docs/QUICKSTART.md](docs/QUICKSTART.md) · LOCALHOST NYC, 2026-11-07
 
 ## The idea in one line
 
@@ -97,6 +97,13 @@ The whole stack is a Tinfoil Container, not a demo beside one.
 tinfoil --enclave membrane.shadow-labs.containers.tinfoil.dev --repo wakesync/hivemind attestation verify --json
 ```
 
+### Live status: v0.2.2, generating, attested
+
+- **Release:** [`v0.2.2`](https://github.com/wakesync/hivemind/releases/tag/v0.2.2) is promoted and serving. Qwen3.8-27B writes real text in the enclave: `/v1/generate` returns `finish_reason=stop`, and `/recall` answers in `mode=llm` with a correct synthesis of the caller's allowed notes.
+- **Attestation:** `status: ok`. Config digest `44fc407a3558fdf451b9fc31d748c726e68e1c0ad5cfa16ea06e10a9baa4613a`. SEV-SNP measurement `d2030b6f7ff42bacca0b7b46965f7f752ed64747e03567f7752a385c9f6a1e15ebc6effc26277ef51784168d05e6d921`, identical in Sigstore and in the enclave's hardware report. Attested TLS key fingerprint `98c1515374acca082f0666d2e955b63c5d2be450053fbb5423ae08346775fbe6`.
+- **What broke and what fixed it:** on this H200, the general-purpose `vllm/vllm-openai:v0.33.0` engine emitted token 0 at every step for Qwen3.8-27B, with any sampling settings and with or without eager mode, bf16, or language-model-only. The fault was the engine image, not the model, the weights or the sampling. v0.2.2 switches to the model-specific vLLM build from the Qwen3.8 recipe (`vllm/vllm-openai:qwen38@sha256:4a2f33a8…bc31`, pinned in [`tinfoil-config.yml`](tinfoil-config.yml)), and generation came back immediately. v0.2.0 (model-card sampling) and v0.2.1 (eager + bf16 + LM-only) were released, tested on hold and canceled, never promoted. Every step is in the public release history.
+- **Auth holds:** no headers gets 422, a bad signature gets 401. No new egress, no frontier fallback.
+
 ## Darkbloom
 
 The rented brain doesn't have to be a hyperscaler.
@@ -133,7 +140,7 @@ demo/run-local.sh hm-test 18091 && SWARM_URL=http://127.0.0.1:18091 python3 test
 
 - **Tinfoil** confidential containers: attested enclave, Sigstore-logged measurement, dm-verity model weights.
 - **NVIDIA H200** (141 GB) confidential GPU.
-- **Qwen3.8-27B** bf16 on **vLLM** v0.33.0, inside the enclave on a closed network.
+- **Qwen3.8-27B** bf16 on **vLLM** (the model-specific `qwen38` build, digest-pinned), inside the enclave on a closed network.
 - **Darkbloom** private inference on Apple Silicon for the rented brain.
 - **Cognee** data model and backend: tenants, datasets, role grants.
 - **MCP** + OpenAI tool calling for any harness.
@@ -231,7 +238,7 @@ Two containers (memory-api + vLLM) on a closed `swarm` network, single egress al
 5. **Create:** `tinfoil container create hivemind --repo <org>/<config-repo> --tag <version> --host <gpu-host> --secret SWARM_SECRET --secret STRIPE_KEY`. Updates: `tinfoil container update <id> --tag <version> --hold`, check the candidate, then `tinfoil container promote <id>`.
 6. **Verify:** `tinfoil attestation verify`, `tinfoil http`, or `tinfoil container connect hivemind`. vLLM can take ~30 min to load weights on first boot.
 
-**Model:** Qwen3.8-27B bf16 (~54 GB) on one H200, thinking off per request. Fallback configs: [`tinfoil/fallback/`](tinfoil/fallback/) (gpt-oss-20b, and a Qwen eager-mode engine config). Weights mounted read-only via dm-verity, root hash attested.
+**Model:** Qwen3.8-27B bf16 (~54 GB) on one H200, thinking off per request, on `vllm/vllm-openai:qwen38` (the generic `v0.33.0` image emits token 0 on H200 for this model, so don't swap it back). Fallback configs: [`tinfoil/fallback/`](tinfoil/fallback/) (gpt-oss-20b, and a Qwen eager-mode engine config). Weights mounted read-only via dm-verity, root hash attested.
 
 **Persistence:** `/data` is tmpfs, memory resets on redeploy. For durable memory, attach an [encrypted persistent volume](https://docs.tinfoil.sh/containers/encrypted-volumes.md) at `/data`.
 
@@ -257,7 +264,7 @@ clients/               swarm.sh, swarm_client.py, tools.json, mcp/swarm_mcp.py
 demo/seed.sh           conduit scenario (a, b, c)
 demo/run-local.sh      local container on 127.0.0.1:<port>
 demo/motion-v2/        hero film still (hero.gif)
-docs/                  membership-gating proof
+docs/                  QUICKSTART.md (attest + sign + call, python/ts), membership-gating proof
 tests/                 leak_test.py (canaries across all wall states), generate_test.py
 tinfoil/               pin.sh, fallback configs
 tinfoil-config.yml     public, measured enclave config
