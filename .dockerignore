@@ -1,0 +1,6 @@
+.git
+**/__pycache__
+*.db
+tinfoil/*.log
+demo/out
+.env

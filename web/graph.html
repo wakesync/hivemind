@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>swarm-memory // thermal</title>
+<style>
+  :root{--bg:#0c0e11;--ink:#e8e6df;--dim:#8b939c;--line:#2a3038;--acid:#c8ff00;--amber:#ffb000;--hot:#ff3b2f}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:12px/1.6 "IBM Plex Mono",ui-monospace,Menlo,monospace;overflow:hidden;cursor:crosshair}
+  canvas{position:fixed;inset:0}
+  .corner{position:fixed;z-index:5;padding:18px 20px;pointer-events:none;text-transform:uppercase;letter-spacing:.06em}
+  .tl{top:0;left:0}.tr{top:0;right:0;text-align:right}.bl{bottom:0;left:0}.br{bottom:0;right:0;text-align:right;pointer-events:auto}
+  .rec{color:var(--hot)}.acid{color:var(--acid)}.dim{color:var(--dim)}.amber{color:var(--amber)}
+  h1{font-size:13px;margin:0 0 4px;font-weight:600;letter-spacing:.14em}
+  .badge{display:inline-block;border:1px solid var(--line);padding:3px 8px;margin-top:6px}
+  .badge.ok{border-color:var(--acid);color:var(--acid)} .badge.dev{border-color:var(--amber);color:var(--amber)}
+  .panel{border:1px solid var(--line);background:rgba(12,14,17,.82);padding:10px 12px;min-width:230px;text-align:left}
+  .panel b{color:var(--acid);font-weight:500;font-size:18px}
+  .scale{height:8px;width:220px;margin-top:6px;background:linear-gradient(90deg,#000014,#2a0a5e,#7a1a8c,#c4161c,#ff5a00,#ffb000,#ffff7a,#ffffff)}
+  .kv{display:flex;justify-content:space-between;gap:16px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="corner tl">
+  <h1>SWARM-MEMORY</h1>
+  <div class="dim">confidential shared memory // multiplayer agents</div>
+  <div><span class="rec">●</span> LIVE <span id="clock" class="dim"></span></div>
+  <div id="att" class="badge dev">ATTESTATION: CHECKING…</div>
+</div>
+
+<div class="corner tr">
+  <div><span class="dim">MEMBERS</span> <span id="members" class="acid">0</span></div>
+  <div><span class="dim">MEMORIES</span> <span id="mems" class="acid">0</span></div>
+  <div><span class="dim">TOPICS SHOWN</span> <span id="ntopics">0</span></div>
+  <div><span class="dim">HIDDEN (&lt;K=<span id="k">2</span> CONTRIB)</span> <span id="hidden" class="amber">0</span></div>
+</div>
+
+<div class="corner bl">
+  <div class="dim">HEAT = HOW MANY MEMBERS SHARE A TOPIC. NO NAMES. NO RAW TEXT.</div>
+  <div class="scale"></div>
+  <div class="dim">1 contributor ................ all members</div>
+</div>
+
+<div class="corner br">
+  <div class="panel" id="ledger">
+    <div class="dim">TRACK 01 // REVENUE LEDGER</div>
+    <div class="kv"><span>gross</span><b id="gross">—</b></div>
+    <div class="kv"><span class="dim">charges</span><span id="charges">—</span></div>
+    <div class="kv"><span class="dim">source</span><span id="lsrc" class="dim">—</span></div>
+  </div>
+</div>
+
+<script>
+// ironbow thermal palette
+const IRON=[[0,0,20],[42,10,94],[122,26,140],[196,22,28],[255,90,0],[255,176,0],[255,255,122],[255,255,255]];
+function iron(t){t=Math.max(0,Math.min(1,t));const x=t*(IRON.length-1),i=Math.floor(x),f=x-i,a=IRON[i],b=IRON[Math.min(i+1,IRON.length-1)];
+  return `rgb(${a.map((v,j)=>Math.round(v+(b[j]-v)*f)).join(',')})`}
+
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');let W,H,DPR=devicePixelRatio||1;
+function resize(){W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;cv.style.width=W+'px';cv.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0)}
+addEventListener('resize',resize);resize();
+
+const nodes=new Map();let links=[],members=1,mouse={x:-1e3,y:-1e3};
+addEventListener('mousemove',e=>{mouse.x=e.clientX;mouse.y=e.clientY});
+
+function merge(g){
+  members=Math.max(1,g.members);
+  const seen=new Set();
+  for(const n of g.nodes){seen.add(n.id);
+    const o=nodes.get(n.id);
+    if(o){o.weight=n.weight;o.contributors=n.contributors}
+    else nodes.set(n.id,{...n,x:W/2+(Math.random()-.5)*200,y:H/2+(Math.random()-.5)*200,vx:0,vy:0,born:performance.now()})}
+  for(const id of [...nodes.keys()]) if(!seen.has(id)) nodes.delete(id);
+  links=g.links.filter(l=>nodes.has(l.source)&&nodes.has(l.target));
+  document.getElementById('members').textContent=g.members;
+  document.getElementById('mems').textContent=g.memories;
+  document.getElementById('ntopics').textContent=g.nodes.length;
+  document.getElementById('hidden').textContent=g.hidden_topics;
+  document.getElementById('k').textContent=g.k;
+}
+
+function step(){
+  const arr=[...nodes.values()];
+  for(let i=0;i<arr.length;i++){const a=arr[i];
+    for(let j=i+1;j<arr.length;j++){const b=arr[j];let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy+.01;
+      if(d2>250000)continue;const f=4200/d2,d=Math.sqrt(d2);dx/=d;dy/=d;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f}
+    a.vx+=(W/2-a.x)*.0016;a.vy+=(H/2-a.y)*.0016}
+  for(const l of links){const a=nodes.get(l.source),b=nodes.get(l.target);
+    const dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)+.01,k=(d-170)*.004*Math.min(3,l.weight);
+    a.vx+=dx/d*k;a.vy+=dy/d*k;b.vx-=dx/d*k;b.vy-=dy/d*k}
+  for(const n of arr){n.vx*=.82;n.vy*=.82;n.x+=n.vx;n.y+=n.vy}
+}
+
+function draw(t){
+  step();
+  ctx.fillStyle='rgba(12,14,17,.55)';ctx.fillRect(0,0,W,H);
+  ctx.globalCompositeOperation='lighter';
+  for(const l of links){const a=nodes.get(l.source),b=nodes.get(l.target);
+    const heat=(a.contributors+b.contributors)/(2*members);
+    ctx.strokeStyle=iron(heat*.8);ctx.globalAlpha=.25+.15*Math.min(3,l.weight);ctx.lineWidth=.6+l.weight*.5;
+    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke()}
+  ctx.globalAlpha=1;
+  let hover=null;
+  for(const n of nodes.values()){
+    const heat=n.contributors/members, r=6+Math.sqrt(n.weight)*5, pulse=1+.06*Math.sin(t/400+n.x);
+    const g=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,r*3*pulse);
+    g.addColorStop(0,iron(.35+heat*.65));g.addColorStop(.35,iron(heat*.7));g.addColorStop(1,'rgba(0,0,20,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(n.x,n.y,r*3*pulse,0,7);ctx.fill();
+    if(Math.hypot(mouse.x-n.x,mouse.y-n.y)<r*1.5) hover=n;
+  }
+  ctx.globalCompositeOperation='source-over';
+  ctx.font='11px "IBM Plex Mono",monospace';ctx.textAlign='center';
+  ctx.lineWidth=4;ctx.strokeStyle='rgba(12,14,17,.9)';ctx.lineJoin='round';
+  for(const n of nodes.values()){const ly=n.y+14+Math.sqrt(n.weight)*5;const s=n.id.toUpperCase();
+    ctx.strokeText(s,n.x,ly);ctx.fillStyle=n===hover?'#c8ff00':'#e8e6df';ctx.fillText(s,n.x,ly)}
+  if(hover){const x=hover.x,y=hover.y-18-Math.sqrt(hover.weight)*5;
+    ctx.strokeStyle='rgba(255,255,255,.9)';ctx.lineWidth=1;const s=26;
+    [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx,sy])=>{ctx.beginPath();ctx.moveTo(hover.x+sx*s,hover.y+sy*s-sy*8);ctx.lineTo(hover.x+sx*s,hover.y+sy*s);ctx.lineTo(hover.x+sx*s-sx*8,hover.y+sy*s);ctx.stroke()});
+    ctx.fillStyle='#c8ff00';ctx.fillText(`${hover.contributors} MEMBERS · ${hover.weight} MEMORIES`,x,y)}
+  requestAnimationFrame(draw)
+}
+requestAnimationFrame(draw);
+
+async function poll(){try{merge(await (await fetch('graph',{cache:'no-store'})).json())}catch(e){}}
+async function att(){const el=document.getElementById('att');
+  try{const a=await (await fetch('attestation',{cache:'no-store'})).json();
+    if(a.enclave){el.className='badge ok';el.textContent=`ENCLAVE ATTESTED · CVM ${a.cvm_version||'?'} · ${a.attestation_sha256.slice(0,12)}`}
+    else{el.className='badge dev';el.textContent='DEV MODE · NOT IN ENCLAVE'}}catch(e){el.textContent='ATTESTATION: UNAVAILABLE'}}
+async function ledger(){try{const l=await (await fetch('ledger',{cache:'no-store'})).json();
+  const g=Object.entries(l.gross||{}).map(([c,v])=>(c==='usd'?'$':c.toUpperCase()+' ')+v.toFixed(2)).join(' ')||'$0.00';
+  document.getElementById('gross').textContent=g;document.getElementById('charges').textContent=l.charges;
+  document.getElementById('lsrc').textContent=l.source+(l.error?' ('+l.error+')':'')}catch(e){}}
+setInterval(()=>{document.getElementById('clock').textContent=new Date().toISOString().slice(11,19)+'Z'},1000);
+poll();att();ledger();setInterval(poll,2000);setInterval(ledger,15000);setInterval(att,60000);
+</script>
+</body>
+</html>

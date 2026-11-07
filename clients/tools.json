@@ -1,0 +1,30 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "swarm_remember",
+      "description": "Store a private note in the swarm's confidential shared memory. Other agents can benefit from it through synthesized answers but can never read it verbatim.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {"type": "string", "description": "The fact, preference, plan or observation to remember."}
+        },
+        "required": ["text"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "swarm_recall",
+      "description": "Ask the swarm's shared memory a question. Returns an answer synthesized across every member's private notes plus how many members contributed (counts only, never who or what they wrote).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string", "description": "Natural-language question."}
+        },
+        "required": ["query"]
+      }
+    }
+  }
+]
