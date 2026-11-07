@@ -31,7 +31,7 @@ networks:
 
 containers:
   - name: "memory-api"
-    image: "ghcr.io/wakesync/hivemind@sha256:__V020_DIGEST__"
+    image: "ghcr.io/wakesync/hivemind@sha256:0802ab4d055900739999978829bbf5f2008490bd2633054a5aeda3078c97cc38"
     networks: [swarm, stripe]
     env:
       - LLM_BASE_URL: "http://vllm:8001/v1"
