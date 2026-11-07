@@ -64,7 +64,7 @@ containers:
       start_period: 2m
 
   - name: "vllm"
-    image: "vllm/vllm-openai:v0.33.0@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e"
+    image: "vllm/vllm-openai:qwen38@sha256:4a2f33a884222f7049b983263ad9976f89452bb81affecf5b67d89ad35c1bc31"
     runtime: nvidia
     gpus: all
     networks: [swarm]
