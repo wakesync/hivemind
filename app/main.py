@@ -53,7 +53,7 @@ if not STRIPE_KEY.startswith(("sk_", "rk_")):
 WEB_DIR = Path(os.environ.get("WEB_DIR", Path(__file__).resolve().parent.parent / "web"))
 TINFOIL_DIR = Path("/tinfoil")
 
-app = FastAPI(title="swarm-memory", version="0.1.0")
+app = FastAPI(title="hivemind", version="0.2.0")
 _lock = threading.Lock()
 
 # ---------------------------------------------------------------- embeddings
@@ -87,6 +87,20 @@ def db() -> sqlite3.Connection:
         """CREATE TABLE IF NOT EXISTS memories(
              id INTEGER PRIMARY KEY, scope TEXT NOT NULL, text TEXT NOT NULL,
              topics TEXT NOT NULL, emb BLOB NOT NULL, created REAL NOT NULL)"""
+    )
+    cols = {r[1] for r in c.execute("PRAGMA table_info(memories)")}
+    if "org" not in cols:  # NULL org = personal memory, visible to author only
+        c.execute("ALTER TABLE memories ADD COLUMN org TEXT")
+    # hivemind org layer (cognee vocabulary: org = tenant, org memory = dataset)
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS orgs(
+             id TEXT PRIMARY KEY, name TEXT NOT NULL, wall TEXT NOT NULL,
+             created REAL NOT NULL, wall_changed REAL NOT NULL)"""
+    )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS members(
+             org TEXT NOT NULL, user TEXT NOT NULL, role TEXT NOT NULL,
+             PRIMARY KEY(org, user))"""
     )
     return c
 
@@ -167,46 +181,73 @@ def scrub(s: str) -> str:
 class RememberIn(BaseModel):
     text: str = Field(..., min_length=1, max_length=8000)
     scope: str | None = Field(None, description="optional; must equal the signed X-Swarm-User")
+    org: str | None = Field(None, description="org id you're a member of; omit = personal (author-only)")
 
 
 class RecallIn(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
 
 
+WALLS = ("sealed", "signal", "open-derived")
+ORG_ID = r"^[a-z0-9][a-z0-9-]{1,40}$"
+
+
+class OrgIn(BaseModel):
+    id: str = Field(..., pattern=ORG_ID)
+    name: str = Field(..., min_length=1, max_length=80)
+    wall: str = Field("sealed", pattern="^(sealed|signal|open-derived)$")
+
+
+class MemberIn(BaseModel):
+    user: str = Field(..., pattern=r"^[A-Za-z0-9_.:@-]{1,64}$")
+    role: str = Field("member", pattern="^(member|admin)$")
+
+
+class WallIn(BaseModel):
+    wall: str = Field(..., pattern="^(sealed|signal|open-derived)$")
+
+
 # ---------------------------------------------------------------- backends
 class SqliteBackend:
     name = "sqlite"
 
-    def remember(self, scope: str, text: str) -> dict:
+    def remember(self, scope: str, text: str, org: str | None = None) -> dict:
         topics = extract_topics(text)
         v = embed([text])[0]
         with _lock:
             cur = conn().execute(
-                "INSERT INTO memories(scope,text,topics,emb,created) VALUES(?,?,?,?,?)",
-                (scope, text, json.dumps(topics), v.tobytes(), time.time()),
+                "INSERT INTO memories(scope,org,text,topics,emb,created) VALUES(?,?,?,?,?,?)",
+                (scope, org, text, json.dumps(topics), v.tobytes(), time.time()),
             )
             conn().commit()
         return {"id": cur.lastrowid, "topics": topics}
 
-    def search(self, query: str, k: int) -> list[dict]:
+    def search(self, query: str, k: int, where: str = "1=1", args: tuple = (),
+               min_sim: float | None = None) -> list[dict]:
+        """Scope filter is applied in SQL BEFORE ranking: disallowed rows are
+        never loaded, scored, or handed to the LLM."""
         with _lock:
-            rows = conn().execute("SELECT id, scope, text, emb FROM memories").fetchall()
+            rows = conn().execute(
+                f"SELECT id, scope, org, text, emb FROM memories WHERE {where}", args
+            ).fetchall()
         if not rows:
             return []
         q = embed([query])[0]
-        mat = np.stack([np.frombuffer(r[3], dtype=np.float32) for r in rows])
+        mat = np.stack([np.frombuffer(r[4], dtype=np.float32) for r in rows])
         sims = mat @ q
         order = np.argsort(-sims)[:k]
+        floor = RECALL_MIN_SIM if min_sim is None else min_sim
         return [
-            {"id": rows[i][0], "scope": rows[i][1], "text": rows[i][2], "sim": float(sims[i])}
+            {"id": rows[i][0], "scope": rows[i][1], "org": rows[i][2], "text": rows[i][3],
+             "sim": float(sims[i])}
             for i in order
-            if sims[i] >= RECALL_MIN_SIM
+            if sims[i] >= floor
         ]
 
-    def all_topics(self) -> list[tuple[str, list[str]]]:
+    def all_topics(self) -> list[tuple[str, str | None, list[str]]]:
         with _lock:
-            rows = conn().execute("SELECT scope, topics FROM memories").fetchall()
-        return [(r[0], json.loads(r[1])) for r in rows]
+            rows = conn().execute("SELECT scope, org, topics FROM memories").fetchall()
+        return [(r[0], r[1], json.loads(r[2])) for r in rows]
 
     def stats(self) -> dict:
         with _lock:
@@ -229,9 +270,9 @@ backend = make_backend()
 
 # ---------------------------------------------------------------- synthesis
 SYSTEM = (
-    "You are the shared memory of a swarm of agents. You are given private notes contributed by "
-    "several different members. Answer the question by COMBINING facts across notes. Rules: "
-    "never quote notes verbatim, never say who said what, never reveal names, emails, handles, "
+    "You are hivemind, a sealed shared memory running in a confidential enclave. You are given "
+    "private notes from the asker and from orgs they may draw on. Answer the question by COMBINING facts across notes. Rules: "
+    "never quote notes verbatim, never say who said what or which org a fact came from, never reveal names, emails, handles, "
     "phone numbers, keys or links. Paraphrase into one short, direct answer (max 5 sentences). "
     "If the notes don't answer it, say so."
 )
@@ -297,69 +338,243 @@ def extractive_answer(query: str, hits: list[dict]) -> str:
     return " ".join(neutral)
 
 
+# ---------------------------------------------------------------- org layer
+# cognee vocabulary: org = tenant, org memory = dataset, membership = role grant.
+def org_row(org_id: str):
+    with _lock:
+        return conn().execute("SELECT id, name, wall, created, wall_changed FROM orgs WHERE id=?",
+                              (org_id,)).fetchone()
+
+
+def role_of(user: str, org_id: str) -> str | None:
+    with _lock:
+        r = conn().execute("SELECT role FROM members WHERE org=? AND user=?", (org_id, user)).fetchone()
+    return r[0] if r else None
+
+
+def my_orgs(user: str) -> set[str]:
+    with _lock:
+        return {r[0] for r in conn().execute("SELECT org FROM members WHERE user=?", (user,))}
+
+
+def network_orgs(mine: set[str]) -> set[str]:
+    """Your network = orgs reachable through shared members (connected component
+    of the org<->person graph, computed in-enclave, never returned)."""
+    with _lock:
+        rows = conn().execute("SELECT org, user FROM members").fetchall()
+    by_user: dict[str, set] = {}
+    for o, u in rows:
+        by_user.setdefault(u, set()).add(o)
+    seen, frontier = set(mine), set(mine)
+    while frontier:
+        nxt = set()
+        for orgs in by_user.values():
+            if orgs & frontier:
+                nxt |= orgs - seen
+        seen |= nxt
+        frontier = nxt
+    return seen - mine
+
+
+def require_admin(user: str, org_id: str):
+    if not org_row(org_id):
+        raise HTTPException(404, "no such org")
+    if role_of(user, org_id) != "admin":
+        raise HTTPException(403, "org admin only")
+
+
+SIGNAL_MIN_SIM = float(os.environ.get("SIGNAL_MIN_SIM", "0.35"))
+ORG_DAY_USD = float(os.environ.get("ORG_DAY_USD", "5"))
+
+
+def shingles(s: str, n: int = 6) -> set[str]:
+    w = re.findall(r"[a-z0-9]+", s.lower())
+    return {" ".join(w[i:i + n]) for i in range(len(w) - n + 1)}
+
+
+def leaks_raw(answer: str, texts: list[str]) -> bool:
+    """open-derived guard: any 6-word run copied from a non-member note = raw leak."""
+    a = shingles(answer)
+    return any(a & shingles(t) for t in texts)
+
+
+def _inq(xs) -> str:
+    return ",".join("?" * len(xs))
+
+
 # ---------------------------------------------------------------- routes
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "backend": backend.name, **backend.stats(), "llm": LLM_MODEL if LLM_ENABLED else None}
+    with _lock:
+        n_orgs = conn().execute("SELECT COUNT(*) FROM orgs").fetchone()[0]
+    return {"ok": True, "product": "hivemind", "backend": backend.name, **backend.stats(),
+            "orgs": n_orgs, "llm": LLM_MODEL if LLM_ENABLED else None}
+
+
+@app.post("/orgs")
+def create_org(body: OrgIn, user: str = Depends(scope_from_headers)):
+    now = time.time()
+    with _lock:
+        if conn().execute("SELECT 1 FROM orgs WHERE id=?", (body.id,)).fetchone():
+            raise HTTPException(409, "org exists")
+        conn().execute("INSERT INTO orgs VALUES(?,?,?,?,?)", (body.id, body.name, body.wall, now, now))
+        conn().execute("INSERT INTO members VALUES(?,?,?)", (body.id, user, "admin"))
+        conn().commit()
+    return {"org": body.id, "name": body.name, "wall": body.wall, "role": "admin"}
+
+
+@app.post("/orgs/{org_id}/members")
+def add_member(org_id: str, body: MemberIn, user: str = Depends(scope_from_headers)):
+    require_admin(user, org_id)
+    with _lock:
+        conn().execute("INSERT OR REPLACE INTO members VALUES(?,?,?)", (org_id, body.user, body.role))
+        conn().commit()
+    return {"org": org_id, "user": body.user, "role": body.role}
+
+
+@app.post("/orgs/{org_id}/wall")
+def set_wall(org_id: str, body: WallIn, user: str = Depends(scope_from_headers)):
+    require_admin(user, org_id)
+    before = org_row(org_id)[2]
+    with _lock:
+        conn().execute("UPDATE orgs SET wall=?, wall_changed=? WHERE id=?", (body.wall, time.time(), org_id))
+        conn().commit()
+    return {"org": org_id, "wall": body.wall, "was": before}
+
+
+@app.get("/orgs")
+def list_orgs(user: str = Depends(scope_from_headers)):
+    """Caller's view: only orgs you're in. Other orgs are not enumerable."""
+    with _lock:
+        rows = conn().execute(
+            """SELECT o.id, o.name, o.wall, m.role,
+                      (SELECT COUNT(*) FROM members x WHERE x.org=o.id),
+                      (SELECT COUNT(*) FROM memories y WHERE y.org=o.id)
+               FROM orgs o JOIN members m ON m.org=o.id WHERE m.user=? ORDER BY o.id""", (user,)).fetchall()
+        personal = conn().execute("SELECT COUNT(*) FROM memories WHERE scope=? AND org IS NULL",
+                                  (user,)).fetchone()[0]
+    return {"user": user, "personal_memories": personal,
+            "orgs": [{"id": r[0], "name": r[1], "wall": r[2], "role": r[3], "members": r[4], "memories": r[5]}
+                     for r in rows]}
 
 
 @app.post("/remember")
 def remember(body: RememberIn, scope: str = Depends(scope_from_headers)):
     if body.scope and body.scope != scope:
         raise HTTPException(403, "scope must match signed X-Swarm-User")
-    out = backend.remember(scope, body.text)
-    return {"stored": True, "scope": scope, "topics": out["topics"]}
+    if body.org is not None:
+        if not org_row(body.org):
+            raise HTTPException(404, "no such org")
+        if not role_of(scope, body.org):
+            raise HTTPException(403, "not a member of that org")
+    out = backend.remember(scope, body.text, body.org)
+    return {"stored": True, "scope": scope, "org": body.org or "personal", "topics": out["topics"]}
 
 
 @app.post("/recall")
 def recall(body: RecallIn, scope: str = Depends(scope_from_headers)):
-    hits = backend.search(body.query, RECALL_K)
-    scopes = {h["scope"] for h in hits}
-    own = sum(1 for h in hits if h["scope"] == scope)
-    answer, mode = None, "empty"
+    """Walls are enforced here, inside the enclave, BEFORE retrieval:
+       your personal notes + orgs you're in -> full context
+       open-derived orgs you're not in      -> context, but only a derived answer leaves
+       signal orgs in your network          -> existence hint (org COUNT only), zero content
+       sealed orgs you're not in            -> nothing, not even counted"""
+    mine = my_orgs(scope)
+    with _lock:
+        walls = dict(conn().execute("SELECT id, wall FROM orgs").fetchall())
+    derived_orgs = {o for o, w in walls.items() if w == "open-derived" and o not in mine}
+    signal_orgs = {o for o, w in walls.items() if w == "signal" and o not in mine} & network_orgs(mine)
+
+    where = "(org IS NULL AND scope=?)" + (f" OR org IN ({_inq(mine)})" if mine else "")
+    member_hits = backend.search(body.query, RECALL_K, where, (scope, *sorted(mine)))
+    derived_hits = (backend.search(body.query, RECALL_K, f"org IN ({_inq(derived_orgs)})",
+                                   tuple(sorted(derived_orgs))) if derived_orgs else [])
+    signal_hit = set()
+    if signal_orgs:
+        sh = backend.search(body.query, RECALL_K, f"org IN ({_inq(signal_orgs)})",
+                            tuple(sorted(signal_orgs)), min_sim=SIGNAL_MIN_SIM)
+        signal_hit = {h["org"] for h in sh}
+        del sh  # signal content is never passed to the model or the response
+
+    hits = member_hits + derived_hits
+    mode = "empty"
     if hits:
         answer = llm_answer(body.query, hits)
-        mode = "llm" if answer else "extractive"
+        mode = "llm"
+        if answer and derived_hits and leaks_raw(answer, [h["text"] for h in derived_hits]):
+            answer = llm_answer(body.query + " (paraphrase heavily, copy no phrases)", hits)
+            if answer and leaks_raw(answer, [h["text"] for h in derived_hits]):
+                answer = None
         if not answer:
-            answer = extractive_answer(body.query, hits)
+            # extractive returns raw sentences, so it may only ever use member-visible notes
+            mode = "extractive"
+            answer = (extractive_answer(body.query, member_hits) if member_hits else
+                      "a derived answer exists but the in-enclave model is unavailable; nothing raw is returned.")
     else:
-        answer = "nothing in shared memory matches that yet."
+        answer = "nothing in memory you can access matches that yet."
+    hints = []
+    if signal_hit:
+        n = len(signal_hit)
+        hints.append({"type": "signal", "orgs": n,
+                      "message": f"{n} org{'s' if n > 1 else ''} in your network "
+                                 f"{'have' if n > 1 else 'has'} context on this. request access."})
     return {
         "answer": answer,
         "mode": mode,
-        "contributors": {
-            "scopes": len(scopes),  # how many distinct members' memories informed this
-            "other_scopes": len(scopes - {scope}),
-            "memories": len(hits),
-            "own_memories": own,
+        "access": {
+            "personal_memories": sum(1 for h in member_hits if h["org"] is None),
+            "member_orgs": len({h["org"] for h in member_hits if h["org"]}),
+            "member_memories": sum(1 for h in member_hits if h["org"]),
+            "derived_orgs": len({h["org"] for h in derived_hits}),
+            "derived_memories": len(derived_hits),
+            "signal_orgs": len(signal_hit),
         },
+        "contributors": {
+            "scopes": len({h["scope"] for h in hits}),
+            "other_scopes": len({h["scope"] for h in hits} - {scope}),
+            "memories": len(hits),
+            "own_memories": sum(1 for h in hits if h["scope"] == scope),
+        },
+        "hints": hints,
     }
+
+
+PALETTE = ["#c8ff00", "#ff3b2f", "#2fd6ff", "#ffb000", "#c77dff", "#3bff9a"]
 
 
 @app.get("/graph")
 def graph():
+    """Operator/public view. Personal memories never appear. No person labels.
+    Topic words shown only for open-derived orgs; sealed/signal orgs show heat
+    with redacted labels."""
+    with _lock:
+        orgs = conn().execute("SELECT id, name, wall, wall_changed FROM orgs ORDER BY created").fetchall()
+        mcount = dict(conn().execute("SELECT org, COUNT(*) FROM members GROUP BY org").fetchall())
+    wall = {o[0]: o[2] for o in orgs}
     node_mem: Counter = Counter()
-    node_scopes: dict[str, set] = {}
+    node_scopes: dict[tuple, set] = {}
     edges: Counter = Counter()
-    for sc, topics in backend.all_topics():
+    for sc, org, topics in backend.all_topics():
+        if org is None or org not in wall:
+            continue
         for t in topics:
-            node_mem[t] += 1
-            node_scopes.setdefault(t, set()).add(sc)
+            node_mem[(org, t)] += 1
+            node_scopes.setdefault((org, t), set()).add(sc)
         for a, b in combinations(sorted(set(topics)), 2):
-            edges[(a, b)] += 1
-    visible = {t for t, s in node_scopes.items() if len(s) >= GRAPH_K}
-    nodes = [
-        {"id": t, "weight": node_mem[t], "contributors": len(node_scopes[t])}
-        for t in sorted(visible, key=lambda t: -node_mem[t])[:120]
-    ]
-    keep = {n["id"] for n in nodes}
-    links = [
-        {"source": a, "target": b, "weight": w}
-        for (a, b), w in edges.most_common(400)
-        if a in keep and b in keep
-    ]
+            edges[(org, a, b)] += 1
+    visible = {k for k, s in node_scopes.items() if len(s) >= GRAPH_K}
+    nodes, ids = [], {}
+    for org, t in sorted(visible, key=lambda k: -node_mem[k])[:160]:
+        opened = wall[org] == "open-derived"
+        nid = f"{org}:{t}" if opened else f"{org}:#{hashlib.sha256((org + t).encode()).hexdigest()[:6]}"
+        ids[(org, t)] = nid
+        nodes.append({"id": nid, "org": org, "label": t if opened else None,
+                      "weight": node_mem[(org, t)], "contributors": len(node_scopes[(org, t)])})
+    links = [{"source": ids[(o, a)], "target": ids[(o, b)], "weight": w}
+             for (o, a, b), w in edges.most_common(600) if (o, a) in ids and (o, b) in ids]
     st = backend.stats()
     return {
+        "orgs": [{"id": o[0], "name": o[1], "wall": o[2], "wall_changed": o[3], "members": mcount.get(o[0], 0),
+                  "color": PALETTE[i % len(PALETTE)]} for i, o in enumerate(orgs)],
         "nodes": nodes,
         "links": links,
         "k": GRAPH_K,
@@ -403,7 +618,7 @@ STUB_CHARGES = [
 @app.get("/ledger")
 def ledger():
     now = time.time()
-    if _ledger_cache["v"] and now - _ledger_cache["t"] < 30:
+    if _ledger_cache["v"] and now - _ledger_cache["t"] < 5:
         return _ledger_cache["v"]
     source, charges, err = "stub", STUB_CHARGES, None
     if STRIPE_KEY:
@@ -427,6 +642,12 @@ def ledger():
         "gross": {cur: amt / 100 for cur, amt in by_cur.items()},
         "recent": sorted(ok, key=lambda c: -c["created"])[:10],
     }
+    with _lock:
+        orgs = conn().execute("SELECT id, created FROM orgs").fetchall()
+    days = {o[0]: max(1, int((now - o[1]) // 86400) + 1) for o in orgs}
+    out["workspaces"] = {"plan": f"${ORG_DAY_USD:g}/org/day (stub, not billed)", "orgs": len(orgs),
+                         "accrued_usd": round(sum(days.values()) * ORG_DAY_USD, 2),
+                         "run_rate_usd_month": round(len(orgs) * ORG_DAY_USD * 30, 2)}
     _ledger_cache.update(t=now, v=out)
     return out
 

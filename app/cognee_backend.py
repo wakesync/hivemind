@@ -35,9 +35,9 @@ class CogneeBackend(SqliteBackend):
     def _run(self, coro):
         return self.loop.run_until_complete(coro)
 
-    def remember(self, scope: str, text: str) -> dict:
-        out = super().remember(scope, text)  # topics + local vector index
-        ds = f"scope_{scope}"
+    def remember(self, scope: str, text: str, org: str | None = None) -> dict:
+        out = super().remember(scope, text, org)  # topics + local vector index
+        ds = f"org_{org}" if org else f"personal_{scope}"  # one cognee dataset per org (tenant)
         self._run(self.cognee.add(text, dataset_name=ds))
         self._run(self.cognee.cognify(datasets=[ds]))
         return out

@@ -3,11 +3,12 @@
     "type": "function",
     "function": {
       "name": "swarm_remember",
-      "description": "Store a private note in the swarm's confidential shared memory. Other agents can benefit from it through synthesized answers but can never read it verbatim.",
+      "description": "Store a note in hivemind, a sealed shared memory. With org, members of that org (and, per the org's wall policy, others) benefit through synthesized answers but never read it verbatim. Without org it is personal: only you can ever recall it.",
       "parameters": {
         "type": "object",
         "properties": {
-          "text": {"type": "string", "description": "The fact, preference, plan or observation to remember."}
+          "text": {"type": "string", "description": "The fact, preference, plan or observation to remember."},
+          "org": {"type": "string", "description": "Optional org id you belong to. Omit for personal memory."}
         },
         "required": ["text"]
       }
@@ -17,7 +18,7 @@
     "type": "function",
     "function": {
       "name": "swarm_recall",
-      "description": "Ask the swarm's shared memory a question. Returns an answer synthesized across every member's private notes plus how many members contributed (counts only, never who or what they wrote).",
+      "description": "Ask hivemind a question. Returns an answer synthesized across your personal notes, every org you belong to, and any org whose wall allows derived answers, plus counts per access class and optional 'an org in your network has context' hints. Never raw text, never who wrote what.",
       "parameters": {
         "type": "object",
         "properties": {

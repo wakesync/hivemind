@@ -43,7 +43,7 @@ for line in sys.stdin:
     if method == "initialize":
         reply(id_, {"protocolVersion": req.get("params", {}).get("protocolVersion", "2025-06-18"),
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "swarm-memory", "version": "0.1.0"}})
+                    "serverInfo": {"name": "hivemind", "version": "0.2.0"}})
     elif method == "tools/list":
         reply(id_, {"tools": MCP_TOOLS})
     elif method == "tools/call":

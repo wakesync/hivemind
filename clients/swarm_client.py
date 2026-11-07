@@ -36,8 +36,9 @@ class Swarm:
         with urllib.request.urlopen(req, timeout=120) as r:
             return json.loads(r.read())
 
-    def remember(self, text: str) -> dict:
-        return self._post("/remember", {"text": text})
+    def remember(self, text: str, org: str | None = None) -> dict:
+        """org=None -> personal memory (only you can ever recall it)."""
+        return self._post("/remember", {"text": text, **({"org": org} if org else {})})
 
     def recall(self, query: str) -> dict:
         return self._post("/recall", {"query": query})
@@ -45,7 +46,7 @@ class Swarm:
     def dispatch(self, name: str, arguments: str | dict) -> dict:
         args = json.loads(arguments) if isinstance(arguments, str) else arguments
         if name == "swarm_remember":
-            return self.remember(args["text"])
+            return self.remember(args["text"], args.get("org"))
         if name == "swarm_recall":
             return self.recall(args["query"])
         raise ValueError(f"unknown tool {name}")

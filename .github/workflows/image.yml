@@ -29,4 +29,4 @@ jobs:
           push: true
           provenance: false
           tags: ghcr.io/${{ github.repository_owner }}/hivemind:${{ inputs.tag }}
-      - run: echo "PIN THIS -> ghcr.io/${{ github.repository_owner }}/swarm-memory@${{ steps.push.outputs.digest }}" | tee -a $GITHUB_STEP_SUMMARY
+      - run: echo "PIN THIS -> ghcr.io/${{ github.repository_owner }}/hivemind@${{ steps.push.outputs.digest }}" | tee -a $GITHUB_STEP_SUMMARY

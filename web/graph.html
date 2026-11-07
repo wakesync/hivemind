@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>swarm-memory // thermal</title>
+<title>hivemind // sealed brain</title>
 <style>
   :root{--bg:#0c0e11;--ink:#e8e6df;--dim:#8b939c;--line:#2a3038;--acid:#c8ff00;--amber:#ffb000;--hot:#ff3b2f}
   *{box-sizing:border-box}
@@ -19,29 +19,42 @@
   .panel b{color:var(--acid);font-weight:500;font-size:18px}
   .scale{height:8px;width:220px;margin-top:6px;background:linear-gradient(90deg,#000014,#2a0a5e,#7a1a8c,#c4161c,#ff5a00,#ffb000,#ffff7a,#ffffff)}
   .kv{display:flex;justify-content:space-between;gap:16px}
+  #orgs{margin-top:10px;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+  .org{display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:.02em}
+  .dot{width:9px;height:9px;border-radius:50%}
+  .pill{border:1px solid currentColor;border-radius:999px;padding:0 8px;font-size:10px;text-transform:uppercase;letter-spacing:.08em}
+  .pill.sealed{color:#ff3b2f}.pill.signal{color:#ffb000}.pill.open-derived{color:#c8ff00}
+  .flash{animation:flash 1.6s ease-out}
+  @keyframes flash{0%{background:#fff;color:#000;box-shadow:0 0 30px #fff}100%{background:transparent;box-shadow:none}}
+  #toast{position:fixed;left:50%;top:44%;transform:translate(-50%,-50%);z-index:9;font-size:22px;letter-spacing:.18em;opacity:0;pointer-events:none;text-align:center}
+  #toast.on{animation:toast 2.6s ease-out}
+  @keyframes toast{0%{opacity:0;transform:translate(-50%,-40%)}12%{opacity:1;transform:translate(-50%,-50%)}75%{opacity:1}100%{opacity:0}}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 
 <div class="corner tl">
-  <h1>SWARM-MEMORY</h1>
-  <div class="dim">confidential shared memory // multiplayer agents</div>
+  <h1>HIVEMIND</h1>
+  <div class="dim">a sealed brain for people who live across overlapping orgs</div>
   <div><span class="rec">●</span> LIVE <span id="clock" class="dim"></span></div>
   <div id="att" class="badge dev">ATTESTATION: CHECKING…</div>
+  <div id="orgs"></div>
 </div>
+<div id="toast"></div>
 
 <div class="corner tr">
-  <div><span class="dim">MEMBERS</span> <span id="members" class="acid">0</span></div>
+  <div><span class="dim">ORGS</span> <span id="norgs" class="acid">0</span></div>
+  <div><span class="dim">PEOPLE</span> <span id="members" class="acid">0</span></div>
   <div><span class="dim">MEMORIES</span> <span id="mems" class="acid">0</span></div>
   <div><span class="dim">TOPICS SHOWN</span> <span id="ntopics">0</span></div>
   <div><span class="dim">HIDDEN (&lt;K=<span id="k">2</span> CONTRIB)</span> <span id="hidden" class="amber">0</span></div>
 </div>
 
 <div class="corner bl">
-  <div class="dim">HEAT = HOW MANY MEMBERS SHARE A TOPIC. NO NAMES. NO RAW TEXT.</div>
-  <div class="scale"></div>
-  <div class="dim">1 contributor ................ all members</div>
+  <div class="dim">COLOR = ORG. BRIGHTNESS = HOW MANY MEMBERS SHARE A TOPIC.</div>
+  <div class="dim">NO PEOPLE. NO RAW TEXT. SEALED/SIGNAL TOPICS ARE REDACTED (#hash).</div>
+  <div class="dim">PERSONAL MEMORY NEVER APPEARS HERE.</div>
 </div>
 
 <div class="corner br">
@@ -50,6 +63,9 @@
     <div class="kv"><span>gross</span><b id="gross">—</b></div>
     <div class="kv"><span class="dim">charges</span><span id="charges">—</span></div>
     <div class="kv"><span class="dim">source</span><span id="lsrc" class="dim">—</span></div>
+    <div class="dim" style="margin-top:6px">ORG WORKSPACES · <span id="wsplan">$5/org/day</span></div>
+    <div class="kv"><span>run rate</span><span id="wsrate" class="acid">—</span></div>
+    <div class="kv"><span class="dim">accrued</span><span id="wsacc">—</span></div>
   </div>
 </div>
 
@@ -64,14 +80,27 @@ function resize(){W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;cv.s
 addEventListener('resize',resize);resize();
 
 const nodes=new Map();let links=[],members=1,mouse={x:-1e3,y:-1e3};
+const ORGC={},ORGW={},ORGNAME={},flashes={};
+function hex2rgb(h){return [1,3,5].map(i=>parseInt(h.slice(i,i+2),16))}
+function orgcol(org,heat,a=1){const c=hex2rgb(ORGC[org]||'#e8e6df'),k=.35+.65*heat;
+  return `rgba(${c.map(v=>Math.round(v*k+(255-v)*Math.max(0,heat-.85)*2)).join(',')},${a})`}
+function orgPills(g){const box=document.getElementById('orgs');let html='';
+  for(const o of g.orgs){const prev=ORGW[o.id];ORGC[o.id]=o.color;ORGNAME[o.id]=o.name;
+    if(prev&&prev!==o.wall){flashes[o.id]=performance.now();toast(`${o.name.toUpperCase()} · WALL ${prev.toUpperCase()} → ${o.wall.toUpperCase()}`,o.color)}
+    ORGW[o.id]=o.wall;
+    const fl=flashes[o.id]&&performance.now()-flashes[o.id]<1800?' flash':'';
+    html+=`<div class="org"><span class="dot" style="background:${o.color};box-shadow:0 0 8px ${o.color}"></span>${o.name} <span class="dim">${o.members}</span> <span class="pill ${o.wall}${fl}">${o.wall}</span></div>`}
+  box.innerHTML=html;document.getElementById('norgs').textContent=g.orgs.length}
+function toast(s,c){const t=document.getElementById('toast');t.textContent=s;t.style.color=c;t.classList.remove('on');void t.offsetWidth;t.classList.add('on')}
 addEventListener('mousemove',e=>{mouse.x=e.clientX;mouse.y=e.clientY});
 
 function merge(g){
   members=Math.max(1,g.members);
+  orgPills(g);
   const seen=new Set();
   for(const n of g.nodes){seen.add(n.id);
     const o=nodes.get(n.id);
-    if(o){o.weight=n.weight;o.contributors=n.contributors}
+    if(o){o.weight=n.weight;o.contributors=n.contributors;o.label=n.label}
     else nodes.set(n.id,{...n,x:W/2+(Math.random()-.5)*200,y:H/2+(Math.random()-.5)*200,vx:0,vy:0,born:performance.now()})}
   for(const id of [...nodes.keys()]) if(!seen.has(id)) nodes.delete(id);
   links=g.links.filter(l=>nodes.has(l.source)&&nodes.has(l.target));
@@ -87,7 +116,9 @@ function step(){
   for(let i=0;i<arr.length;i++){const a=arr[i];
     for(let j=i+1;j<arr.length;j++){const b=arr[j];let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy+.01;
       if(d2>250000)continue;const f=4200/d2,d=Math.sqrt(d2);dx/=d;dy/=d;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f}
-    a.vx+=(W/2-a.x)*.0016;a.vy+=(H/2-a.y)*.0016}
+    const ai=Object.keys(ORGC).indexOf(a.org),no=Math.max(1,Object.keys(ORGC).length),ang=ai/no*6.283-1.57,R=Math.min(W,H)*.2*(no>1);
+    const cx=W/2+Math.cos(ang)*R,cy=H/2+Math.sin(ang)*R;
+    a.vx+=(cx-a.x)*.0022;a.vy+=(cy-a.y)*.0022}
   for(const l of links){const a=nodes.get(l.source),b=nodes.get(l.target);
     const dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)+.01,k=(d-170)*.004*Math.min(3,l.weight);
     a.vx+=dx/d*k;a.vy+=dy/d*k;b.vx-=dx/d*k;b.vy-=dy/d*k}
@@ -100,26 +131,27 @@ function draw(t){
   ctx.globalCompositeOperation='lighter';
   for(const l of links){const a=nodes.get(l.source),b=nodes.get(l.target);
     const heat=(a.contributors+b.contributors)/(2*members);
-    ctx.strokeStyle=iron(heat*.8);ctx.globalAlpha=.25+.15*Math.min(3,l.weight);ctx.lineWidth=.6+l.weight*.5;
+    ctx.strokeStyle=orgcol(a.org,heat*.8);ctx.globalAlpha=.25+.15*Math.min(3,l.weight);ctx.lineWidth=.6+l.weight*.5;
     ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke()}
   ctx.globalAlpha=1;
   let hover=null;
   for(const n of nodes.values()){
-    const heat=n.contributors/members, r=6+Math.sqrt(n.weight)*5, pulse=1+.06*Math.sin(t/400+n.x);
+    const heat=Math.min(1,n.contributors/3), fl=flashes[n.org]?Math.max(0,1-(t-flashes[n.org])/1500):0;
+    const r=6+Math.sqrt(n.weight)*5+fl*14, pulse=1+.06*Math.sin(t/400+n.x);
     const g=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,r*3*pulse);
-    g.addColorStop(0,iron(.35+heat*.65));g.addColorStop(.35,iron(heat*.7));g.addColorStop(1,'rgba(0,0,20,0)');
+    g.addColorStop(0,fl>0?`rgba(255,255,255,${.6+.4*fl})`:orgcol(n.org,.6+heat*.4));g.addColorStop(.35,orgcol(n.org,heat*.7,.8));g.addColorStop(1,'rgba(0,0,20,0)');
     ctx.fillStyle=g;ctx.beginPath();ctx.arc(n.x,n.y,r*3*pulse,0,7);ctx.fill();
     if(Math.hypot(mouse.x-n.x,mouse.y-n.y)<r*1.5) hover=n;
   }
   ctx.globalCompositeOperation='source-over';
   ctx.font='11px "IBM Plex Mono",monospace';ctx.textAlign='center';
   ctx.lineWidth=4;ctx.strokeStyle='rgba(12,14,17,.9)';ctx.lineJoin='round';
-  for(const n of nodes.values()){const ly=n.y+14+Math.sqrt(n.weight)*5;const s=n.id.toUpperCase();
+  for(const n of nodes.values()){const ly=n.y+14+Math.sqrt(n.weight)*5;const s=n.label?n.label.toUpperCase():'█ '+n.id.split(':')[1].toUpperCase();
     ctx.strokeText(s,n.x,ly);ctx.fillStyle=n===hover?'#c8ff00':'#e8e6df';ctx.fillText(s,n.x,ly)}
   if(hover){const x=hover.x,y=hover.y-18-Math.sqrt(hover.weight)*5;
     ctx.strokeStyle='rgba(255,255,255,.9)';ctx.lineWidth=1;const s=26;
     [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx,sy])=>{ctx.beginPath();ctx.moveTo(hover.x+sx*s,hover.y+sy*s-sy*8);ctx.lineTo(hover.x+sx*s,hover.y+sy*s);ctx.lineTo(hover.x+sx*s-sx*8,hover.y+sy*s);ctx.stroke()});
-    ctx.fillStyle='#c8ff00';ctx.fillText(`${hover.contributors} MEMBERS · ${hover.weight} MEMORIES`,x,y)}
+    ctx.fillStyle='#c8ff00';ctx.fillText(`${(ORGNAME[hover.org]||'').toUpperCase()} · ${hover.contributors} MEMBERS · ${hover.weight} MEMORIES`,x,y)}
   requestAnimationFrame(draw)
 }
 requestAnimationFrame(draw);
@@ -132,9 +164,11 @@ async function att(){const el=document.getElementById('att');
 async function ledger(){try{const l=await (await fetch('ledger',{cache:'no-store'})).json();
   const g=Object.entries(l.gross||{}).map(([c,v])=>(c==='usd'?'$':c.toUpperCase()+' ')+v.toFixed(2)).join(' ')||'$0.00';
   document.getElementById('gross').textContent=g;document.getElementById('charges').textContent=l.charges;
-  document.getElementById('lsrc').textContent=l.source+(l.error?' ('+l.error+')':'')}catch(e){}}
+  document.getElementById('lsrc').textContent=l.source+(l.error?' ('+l.error+')':'');
+  if(l.workspaces){document.getElementById('wsrate').textContent='$'+l.workspaces.run_rate_usd_month.toFixed(0)+'/mo';
+    document.getElementById('wsacc').textContent='$'+l.workspaces.accrued_usd.toFixed(2)+' · '+l.workspaces.orgs+' orgs'}}catch(e){}}
 setInterval(()=>{document.getElementById('clock').textContent=new Date().toISOString().slice(11,19)+'Z'},1000);
-poll();att();ledger();setInterval(poll,2000);setInterval(ledger,15000);setInterval(att,60000);
+poll();att();ledger();setInterval(poll,1000);setInterval(ledger,6000);setInterval(att,60000);
 </script>
 </body>
 </html>

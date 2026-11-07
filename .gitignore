@@ -4,3 +4,4 @@ demo/out/
 *.key
 __pycache__/
 tinfoil/*.log
+.local/
