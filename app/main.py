@@ -27,7 +27,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------- config
@@ -52,6 +52,12 @@ GENERATE_ENABLED = os.environ.get("GENERATE_ENABLED", "1") not in ("0", "false",
 GEN_MAX_MESSAGES = int(os.environ.get("GEN_MAX_MESSAGES", "16"))
 GEN_MAX_PROMPT_CHARS = int(os.environ.get("GEN_MAX_PROMPT_CHARS", "16000"))
 GEN_MAX_TOKENS = int(os.environ.get("GEN_MAX_TOKENS", "1024"))
+# OpenAI-compatible POST /v1/chat/completions (v0.3.0). HMAC-gated, stateless, fixed upstreams.
+# Model id -> closed in-enclave vLLM. The caller picks a model id from this allowlist only;
+# it can never supply a URL. ABL_* = second vLLM serving the abliterated weights.
+ABL_BASE_URL = os.environ.get("ABL_BASE_URL", "").rstrip("/")
+ABL_MODEL = os.environ.get("ABL_MODEL", "qwen3.8-27b-abliterated")
+CHAT_ENABLED = os.environ.get("CHAT_ENABLED", "1") not in ("0", "false", "")
 LLM_EXTRA_BODY = os.environ.get("LLM_EXTRA_BODY", "")  # JSON merged into chat body
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "60"))
 LLM_ENABLED = os.environ.get("LLM_ENABLED", "1") not in ("0", "false", "")
@@ -66,7 +72,7 @@ if not STRIPE_KEY.startswith(("sk_", "rk_")):
 WEB_DIR = Path(os.environ.get("WEB_DIR", Path(__file__).resolve().parent.parent / "web"))
 TINFOIL_DIR = Path("/tinfoil")
 
-app = FastAPI(title="hivemind", version="0.2.0")
+app = FastAPI(title="hivemind", version="0.3.0")
 _lock = threading.Lock()
 
 # ---------------------------------------------------------------- embeddings
@@ -478,7 +484,8 @@ def healthz():
     with _lock:
         n_orgs = conn().execute("SELECT COUNT(*) FROM orgs").fetchone()[0]
     return {"ok": True, "product": "hivemind", "backend": backend.name, **backend.stats(),
-            "orgs": n_orgs, "llm": LLM_MODEL if LLM_ENABLED else None}
+            "orgs": n_orgs, "llm": LLM_MODEL if LLM_ENABLED else None,
+            "chat_models": sorted(chat_upstreams()) if CHAT_ENABLED else []}
 
 
 @app.post("/orgs")
@@ -650,6 +657,144 @@ def generate(body: GenerateIn, user: str = Depends(scope_from_headers)):
                 "latency_s": latency}
     finally:
         _gen_slot.release()
+
+
+# ---------------------------------------------------------------- OpenAI-compatible chat
+def chat_upstreams() -> dict:
+    """model id -> fixed in-enclave base url. Nothing else is reachable."""
+    ups = {}
+    if LLM_ENABLED and LLM_BASE_URL:
+        ups[LLM_MODEL] = LLM_BASE_URL
+    if ABL_BASE_URL:
+        ups[ABL_MODEL] = ABL_BASE_URL
+    return ups
+
+
+_chat_slots: dict = {}
+_chat_slots_lock = threading.Lock()
+
+
+def chat_slot(model: str) -> threading.Semaphore:
+    with _chat_slots_lock:
+        if model not in _chat_slots:
+            # the stock model shares its slot with /v1/generate (one engine, one in flight)
+            _chat_slots[model] = _gen_slot if model == LLM_MODEL else threading.Semaphore(1)
+        return _chat_slots[model]
+
+
+class ChatPart(BaseModel):
+    model_config = {"extra": "ignore"}
+    type: str = Field(..., pattern="^text$")  # text only: no images/audio/files
+    text: str = Field(..., max_length=16000)
+
+
+class ChatMessage(BaseModel):
+    model_config = {"extra": "ignore"}  # name etc. dropped, never forwarded
+    role: str = Field(..., pattern="^(system|developer|user|assistant)$")
+    content: str | list[ChatPart]
+
+    def text(self) -> str:
+        return self.content if isinstance(self.content, str) else "\n".join(p.text for p in self.content)
+
+
+class ChatIn(BaseModel):
+    # OpenAI SDKs send many optional fields; unknown ones are ignored and NEVER forwarded.
+    model_config = {"extra": "ignore"}
+    model: str = Field(..., max_length=64)
+    messages: list[ChatMessage] = Field(..., min_length=1, max_length=64)
+    max_tokens: int | None = Field(None, ge=1, le=8192)
+    max_completion_tokens: int | None = Field(None, ge=1, le=8192)
+    temperature: float | None = Field(None, ge=0, le=2)
+    top_p: float | None = Field(None, gt=0, le=1)
+    presence_penalty: float | None = Field(None, ge=-2, le=2)
+    frequency_penalty: float | None = Field(None, ge=-2, le=2)
+    stop: str | list[str] | None = None
+    seed: int | None = None
+    stream: bool = False
+    tools: list | None = None
+    n: int | None = Field(None, ge=1, le=1)
+
+
+def _chat_upstream_body(body: ChatIn, model: str) -> dict:
+    mt = body.max_completion_tokens or body.max_tokens or 512
+    if mt > GEN_MAX_TOKENS:
+        raise HTTPException(413, f"max_tokens over {GEN_MAX_TOKENS}")
+    msgs = [{"role": "system" if m.role == "developer" else m.role, "content": m.text()} for m in body.messages]
+    if len(msgs) > GEN_MAX_MESSAGES:
+        raise HTTPException(413, f"at most {GEN_MAX_MESSAGES} messages")
+    if sum(len(m["content"]) for m in msgs) > GEN_MAX_PROMPT_CHARS:
+        raise HTTPException(413, f"prompt over {GEN_MAX_PROMPT_CHARS} chars")
+    req = {"max_tokens": mt, "messages": msgs, **sampling_params()}
+    for k in ("temperature", "top_p", "presence_penalty", "frequency_penalty", "seed"):
+        v = getattr(body, k)
+        if v is not None:
+            req[k] = v
+    if body.stop is not None:
+        req["stop"] = [body.stop] if isinstance(body.stop, str) else body.stop[:4]
+    req["model"] = model
+    return req
+
+
+@app.get("/v1/models")
+def chat_models(user: str = Depends(scope_from_headers)):
+    now = int(time.time())
+    return {"object": "list", "data": [{"id": m, "object": "model", "created": now, "owned_by": "enclave"}
+                                       for m in chat_upstreams()]}
+
+
+@app.post("/v1/chat/completions")
+def chat_completions(body: ChatIn, user: str = Depends(scope_from_headers)):
+    """OpenAI-compatible, stateless. Model id must be in the in-enclave allowlist; each id maps
+    to a fixed closed vLLM. No tools, text only, capped, one request in flight per engine (429).
+    Nothing persisted; logs are content-free counts. stream=true gets a single-chunk SSE."""
+    if not CHAT_ENABLED:
+        raise HTTPException(503, "chat disabled")
+    ups = chat_upstreams()
+    if body.model not in ups:
+        raise HTTPException(404, f"model must be one of {sorted(ups)}")
+    if body.tools:
+        raise HTTPException(400, "tools are not supported")
+    req = _chat_upstream_body(body, body.model)
+    slot = chat_slot(body.model)
+    if not slot.acquire(blocking=False):
+        raise HTTPException(429, "model busy, one request in flight")
+    try:
+        t0 = time.time()
+        try:
+            r = httpx.post(f"{ups[body.model]}/chat/completions", json=req,
+                           headers={"Authorization": f"Bearer {LLM_API_KEY}"} if LLM_API_KEY else {},
+                           timeout=LLM_TIMEOUT)
+            r.raise_for_status()
+            data = r.json()
+            choice = data["choices"][0]
+        except Exception as e:
+            print(f"[swarm-memory] chat upstream error model={body.model} {type(e).__name__}")
+            raise HTTPException(502, "in-enclave model unavailable")
+        text = strip_think((choice.get("message") or {}).get("content") or "")
+        q = quality(text)
+        latency = round(time.time() - t0, 2)
+        print(f"[swarm-memory] chat model={body.model} chars={q['chars']} ratio={q['letter_ratio']} "
+              f"degenerate={q['degenerate']} finish={choice.get('finish_reason')} s={latency}")
+    finally:
+        slot.release()
+    cid = "chatcmpl-" + hashlib.sha256(f"{t0}{os.getpid()}{threading.get_ident()}".encode()).hexdigest()[:24]
+    created = int(t0)
+    finish = choice.get("finish_reason") or "stop"
+    usage = data.get("usage")
+    if not body.stream:
+        return {"id": cid, "object": "chat.completion", "created": created, "model": body.model,
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
+                             "finish_reason": finish}],
+                "usage": usage}
+
+    def sse():
+        base = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": body.model}
+        yield "data: " + json.dumps({**base, "choices": [{"index": 0, "delta": {"role": "assistant", "content": text},
+                                                          "finish_reason": None}]}) + "\n\n"
+        yield "data: " + json.dumps({**base, "choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
+                                     "usage": usage}) + "\n\n"
+        yield "data: [DONE]\n\n"
+    return StreamingResponse(sse(), media_type="text/event-stream")
 
 
 @app.get("/graph")
