@@ -1,0 +1,150 @@
+# hivemind + private per-org fine-tuning (Lane B). NOT the root config: Lane A copies this over
+# tinfoil-config.yml for a held candidate release when the GPU slot is scheduled.
+#
+# Derived from v0.2.2 (stock Qwen3.8-27B, the known-good engine). Mode A "static split" on one H200:
+#   vllm      0.50 of the GPU (50 GiB bf16 weights + ~13 GiB KV), LoRA serving on, 16k ctx
+#   trainer   QLoRA (nf4 base ~16 GiB + ~10 GiB train state/activations) in the remaining ~65 GiB
+# Serving never pauses. The abliterated second engine (v0.3.0, 0.46/0.46) can NOT share the GPU with
+# the trainer; this config runs stock + trainer only.
+#
+# Privacy: trainer sits on the closed `train` network (memory-api <-> trainer only, no egress, not in
+# the shim). Adapters live on the in-memory `adapters` volume shared by trainer (rw) and vllm.
+# No route anywhere returns adapter bytes. Receipts are signed with an attested ed25519 key.
+cvm-version: 0.14.7
+cpus: 16
+memory: 65536
+gpus: 1
+
+models:
+  - name: "qwen3.8-27b"
+    repo: "Qwen/Qwen3.8-27B@37561816e66b5b9153b1b64c10968c18c1e6f4a0"
+    mpk: "19a7de4e4830f339b7ab2dda942ecba90d37e1b0d63c6161987a444dc7a8f484_55586119680_ad99ce3c-c747-51b5-9811-dfa8e792d81c"
+
+attested-keys:
+  - id: hivemind-receipts     # signs org-adapter receipts; public key appears in the attestation document
+    key: ed25519
+    uid: 10001                # memory-api runs as uid 10001
+
+networks:
+  swarm: {}                   # closed: memory-api <-> vllm
+  train: {}                   # closed: memory-api <-> trainer
+  stripe:
+    egress: allowlist
+    allow:
+      - api.stripe.com
+
+containers:
+  - name: "memory-api"
+    image: "ghcr.io/wakesync/hivemind@sha256:MEMORY_API_FT_DIGEST"
+    networks: [swarm, train, stripe]
+    keys: [hivemind-receipts]
+    env:
+      - LLM_BASE_URL: "http://vllm:8001/v1"
+      - LLM_MODEL: "qwen3.8-27b"
+      - LLM_TIMEOUT: "120"
+      - MEMORY_BACKEND: "sqlite"
+      - GRAPH_K: "2"
+      - DB_PATH: "/data/swarm.db"
+      - LLM_TEMPERATURE: "0.7"
+      - LLM_TOP_P: "0.8"
+      - LLM_TOP_K: "20"
+      - LLM_MIN_P: "0"
+      - LLM_PRESENCE_PENALTY: "1.5"
+      - LLM_REPETITION_PENALTY: "1.0"
+      - GENERATE_ENABLED: "1"
+      - GEN_MAX_MESSAGES: "16"
+      - GEN_MAX_PROMPT_CHARS: "16000"
+      - GEN_MAX_TOKENS: "1024"
+      - CHAT_ENABLED: "1"
+      # private fine-tuning
+      - FT_ENABLED: "1"
+      - FT_TRAINER_URL: "http://trainer:8090"
+      - FT_SERVE: "auto"           # vLLM LoRA, falls back to trainer HF serving if the engine refuses
+      - FT_ADAPTER_ROOT: "/adapters"
+      - FT_MAX_RANK: "16"
+      - FT_BASE_ID: "mpk-19a7de4e4830f339b7ab2dda942ecba90d37e1b0d63c6161987a444dc7a8f484"
+      - RECEIPT_KEY_DIR: "/run/tinfoil/keys/hivemind-receipts"
+    secrets:
+      - SWARM_SECRET
+      - STRIPE_KEY
+    tmpfs:
+      /data: "size=512m,mode=1777"
+      /tmp: "size=256m,mode=1777"
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 2m
+
+  - name: "vllm"
+    image: "vllm/vllm-openai:qwen38@sha256:4a2f33a884222f7049b983263ad9976f89452bb81affecf5b67d89ad35c1bc31"
+    runtime: nvidia
+    gpus: all
+    networks: [swarm]
+    restart: always
+    env:
+      - VLLM_ALLOW_RUNTIME_LORA_UPDATING: "True"   # /v1/load_lora_adapter; reachable only from memory-api
+    volumes:
+      - "adapters:/adapters"
+    command: [
+      "--model", "/tinfoil/mpk/mpk-19a7de4e4830f339b7ab2dda942ecba90d37e1b0d63c6161987a444dc7a8f484",
+      "--served-model-name", "qwen3.8-27b",
+      "--port", "8001",
+      "--max-model-len", "16384",
+      "--max-num-seqs", "8",
+      "--gpu-memory-utilization", "0.50",
+      "--reasoning-parser", "qwen3",
+      "--enforce-eager",
+      "--dtype", "bfloat16",
+      "--language-model-only",
+      "--enable-lora",
+      "--max-loras", "4",
+      "--max-lora-rank", "16",
+      "--max-cpu-loras", "16"
+    ]
+    tmpfs:
+      /tmp: "size=2g,mode=1777,exec"
+      /root: "size=8g,mode=0700,exec"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30m
+
+  # Trainer: waits for vLLM to finish its memory profiling so the two never race the allocator,
+  # then loads lazily on the first job (nothing on the GPU until an org fine-tunes).
+  - name: "trainer"
+    image: "ghcr.io/wakesync/hivemind-trainer@sha256:TRAINER_DIGEST"
+    runtime: nvidia
+    gpus: all
+    networks: [train, swarm]
+    secrets:
+      - SWARM_SECRET          # only to derive the memory-api -> trainer bearer token
+    env:
+      - FT_BASE_MODEL: "/tinfoil/mpk/mpk-19a7de4e4830f339b7ab2dda942ecba90d37e1b0d63c6161987a444dc7a8f484"
+      - FT_ADAPTER_DIR: "/adapters"
+      - FT_QUANT: "nf4"       # QLoRA, mode A. "" = bf16 LoRA (needs vLLM sleep / more GPU)
+      - FT_SERVE_GENERATE: "1"
+      - PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+      - HOME: "/root"
+    volumes:
+      - "adapters:/adapters"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["until curl -sf http://vllm:8001/health >/dev/null; do sleep 10; done; exec python3 -m uvicorn trainer.service:app --host 0.0.0.0 --port 8090"]
+    tmpfs:
+      /tmp: "size=4g,mode=1777,exec"
+      /root: "size=4g,mode=0700,exec"
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8090/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40m
+
+shim:
+  upstream-container: "memory-api"
+  upstream-port: 8080
+  paths:
+    - /*                  # everything goes to memory-api; vllm and trainer are never exposed

@@ -4,3 +4,4 @@ httpx==0.28.1
 fastembed==0.9.1
 numpy<3
 pydantic>=2
+cryptography==50.0.2

@@ -1,0 +1,7 @@
+# installed with --no-deps on top of the vLLM qwen38 image (which provides torch, transformers,
+# safetensors, fastapi, uvicorn, pydantic, triton, einops, huggingface_hub, psutil, pyyaml)
+peft==0.21.2
+accelerate==1.15.0
+flash-linear-attention==0.6.0
+fla-core==0.6.0
+bitsandbytes==0.50.2

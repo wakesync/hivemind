@@ -921,3 +921,10 @@ def graph_html():
 @app.exception_handler(sqlite3.Error)
 def _sqlerr(_, exc):
     return JSONResponse({"error": "storage"}, status_code=500)
+
+
+# ---------------------------------------------------------------- private fine-tuning (org adapters)
+from app import finetune as _finetune  # noqa: E402  (imports this module; must stay last)
+
+_finetune.init_tables()
+app.include_router(_finetune.router)

@@ -1,0 +1,46 @@
+# Build + push the trainer sidecar image (GPU, ~10 GB: vLLM qwen38 base + peft/FLA) and print the
+# digest to pin in tinfoil/finetune/tinfoil-config.finetune.yml.
+name: Build trainer image
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: image tag
+        required: true
+        default: ft-0.1.0
+  push:
+    branches: [feat/private-finetune]
+    paths: ["trainer/**", ".github/workflows/trainer-image.yml"]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Free runner disk (base image is ~20 GB unpacked)
+        uses: jlumbroso/free-disk-space@cf1e78c50ca91e757bab3edc229027eebfc07871
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: trainer/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ghcr.io/${{ github.repository_owner }}/hivemind-trainer:${{ inputs.tag || 'ft-0.1.0' }}
+      - run: echo "PIN THIS -> ghcr.io/${{ github.repository_owner }}/hivemind-trainer@${{ steps.push.outputs.digest }}" | tee -a $GITHUB_STEP_SUMMARY
