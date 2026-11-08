@@ -116,7 +116,7 @@ containers:
   # Trainer: waits for vLLM to finish its memory profiling so the two never race the allocator,
   # then loads lazily on the first job (nothing on the GPU until an org fine-tunes).
   - name: "trainer"
-    image: "ghcr.io/wakesync/hivemind-trainer@sha256:TRAINER_DIGEST"
+    image: "ghcr.io/wakesync/hivemind-trainer@sha256:b100b32bfe1d3a4b69e3480bcb47c2ee65702c7769b0d7a43dfddbe8ca71a4f4"
     runtime: nvidia
     gpus: all
     networks: [train, swarm]
