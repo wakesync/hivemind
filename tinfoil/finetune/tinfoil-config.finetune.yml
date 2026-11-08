@@ -35,7 +35,7 @@ networks:
 
 containers:
   - name: "memory-api"
-    image: "ghcr.io/wakesync/hivemind@sha256:MEMORY_API_FT_DIGEST"
+    image: "ghcr.io/wakesync/hivemind@sha256:0b1fefe66f0cb376d904b396a6cd93ad8e9307ea7280cc8cb857b3263ea568c3"
     networks: [swarm, train, stripe]
     keys: [hivemind-receipts]
     env:
